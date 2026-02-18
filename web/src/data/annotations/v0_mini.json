@@ -1,0 +1,33 @@
+{
+  "version": "v0_mini",
+  "decisions": [
+    {
+      "id": "minimal-loop",
+      "title": "Why 13 lines is a complete agent",
+      "description": "The minimal agent demonstrates that the core loop (call model -> check stop_reason -> execute tool -> append result) is the entire foundation. Everything added in later versions is an enhancement to this loop, not a replacement. Starting here makes the pattern unforgettable.",
+      "alternatives": "Could start with a more featured version, but the pedagogical value of seeing the absolute minimum is too high.",
+      "zh": {
+        "title": "13 行代码就能构成完整 Agent",
+        "description": "最小 Agent 展示了核心循环（调用模型 -> 检查 stop_reason -> 执行工具 -> 追加结果）就是全部基础。后续版本添加的一切都是对这个循环的增强而非替代。从这里开始能让这个模式印象深刻。"
+      },
+      "ja": {
+        "title": "13行で完全なエージェントが成立する理由",
+        "description": "最小エージェントは、コアループ（モデル呼び出し -> stop_reason確認 -> ツール実行 -> 結果追加）が基盤の全てであることを示しています。後のバージョンで追加されるものは全てこのループの強化であり、置き換えではありません。"
+      }
+    },
+    {
+      "id": "bash-only-tool",
+      "title": "Why bash is the only tool needed at minimum",
+      "description": "Bash can read files, write files, run commands, and inspect the system. A single bash tool gives the model complete system access. This proves that tool quantity doesn't determine agent capability -- the model's ability to compose commands matters more.",
+      "alternatives": "Could provide file_read/file_write as separate tools for safety, but that obscures the key insight about tool composability.",
+      "zh": {
+        "title": "为什么最小版只需要 bash 一个工具",
+        "description": "Bash 能读写文件、运行命令、检查系统。一个 bash 工具就给模型提供了完整的系统访问能力。这证明了工具数量不决定 Agent 能力——模型组合命令的能力更重要。"
+      },
+      "ja": {
+        "title": "最小構成でbashだけが必要な理由",
+        "description": "Bashはファイルの読み書き、コマンド実行、システム検査が可能です。単一のbashツールでモデルに完全なシステムアクセスを提供します。ツールの数がエージェントの能力を決めるのではなく、モデルのコマンド組み合わせ能力の方が重要であることを証明しています。"
+      }
+    }
+  ]
+}
