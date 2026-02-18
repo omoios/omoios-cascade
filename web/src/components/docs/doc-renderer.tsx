@@ -88,8 +88,8 @@ export function DocRenderer({ version }: DocRendererProps) {
   const t = useTranslations("version");
 
   const doc = useMemo(() => {
-    // v8a/v8b/v8c docs are stored under "v8"
-    const docVersion = version.startsWith("v8") ? "v8" : version;
+    // s09/s10/s11 docs may be stored under combined key
+    const docVersion = version;
     const match = docsData.find(
       (d: { version: string; locale: string }) =>
         d.version === docVersion && d.locale === locale

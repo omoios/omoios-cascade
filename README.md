@@ -1,329 +1,262 @@
-# Learn Claude Code - Bash is all you & agent need
+# Learn Claude Code -- Build an AI Agent From Scratch
 
-<p align="center">
-  <img src="./assets/cover.webp" alt="Learn Claude Code" width="800">
-</p>
+```
+                    THE AGENT PATTERN
+                    =================
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+    User --> messages[] --> LLM --> response
+                                      |
+                            stop_reason == "tool_use"?
+                           /                          \
+                         yes                           no
+                          |                             |
+                    execute tools                    return text
+                    append results
+                    loop back -----------------> messages[]
 
-> **Disclaimer**: This is an independent educational project by [shareAI Lab](https://github.com/shareAI-lab). It is not affiliated with, endorsed by, or sponsored by Anthropic. "Claude Code" is a trademark of Anthropic.
 
-**Learn how modern AI agents work by building one from scratch.**
+    That's it. Every AI coding agent is this loop.
+    Everything else is refinement.
+```
 
-[Chinese / 中文](./README_zh.md) | [Japanese / 日本語](./README_ja.md)
+**Learn how modern AI agents work by building one from scratch -- 11 progressive sessions, from 70 lines to full autonomous teams.**
+
+> **Disclaimer**: This is an independent educational project. It is not affiliated with, endorsed by, or sponsored by Anthropic. "Claude Code" is a trademark of Anthropic.
 
 ---
 
-## Why This Repository?
+## Architecture
 
-We created this repository out of admiration for Claude Code - **what we believe to be the most capable AI coding agent in the world**. Initially, we attempted to reverse-engineer its design through behavioral observation and speculation. The analysis we published was riddled with inaccuracies, unfounded guesses, and technical errors. We deeply apologize to the Claude Code team and anyone who was misled by that content.
-
-Over the past six months, through building and iterating on real agent systems, our understanding of **"what makes a true AI agent"** has been fundamentally reshaped. We'd like to share these insights with you. All previous speculative content has been removed and replaced with original educational material.
-
----
-
-> Works with **[Kode CLI](https://github.com/shareAI-lab/Kode)**, **Claude Code**, **Cursor**, and any agent supporting the [Agent Skills Spec](https://agentskills.io/specification).
-
-<img height="400" alt="demo" src="https://github.com/user-attachments/assets/0e1e31f8-064f-4908-92ce-121e2eb8d453" />
-
-## What You'll Learn
-
-After completing this tutorial, you will understand:
-
-- **The Agent Loop** - The surprisingly simple pattern behind all AI coding agents
-- **Tool Design** - How to give AI models the ability to interact with the real world
-- **Explicit Planning** - Using constraints to make AI behavior predictable
-- **Context Management** - Keeping agent memory clean through subagent isolation
-- **Knowledge Injection** - Loading domain expertise on-demand without retraining
-- **Context Compression** - How agents work beyond their context window limits
-- **Task Systems** - From personal notes to team project boards
-- **Parallel Execution** - Background tasks and notification-driven workflows
-- **Team Messaging** - Persistent teammates communicating through inboxes
-- **Autonomous Teams** - Self-organizing agents that find and claim their own work
+```
+learn-claude-code/
+|
+|-- agents/                        # Python reference implementations
+|   |-- s01_agent_loop.py          #   ~70 LOC: while loop + bash
+|   |-- s02_multi_tool.py          #   ~90 LOC: + multi-tool dispatch
+|   |-- s03_structured_planning.py #  ~150 LOC: + TodoManager
+|   |-- s04_context_isolation.py   #  ~130 LOC: + subagent spawn
+|   |-- s05_knowledge_loading.py   #  ~150 LOC: + skill injection
+|   |-- s06_compression.py         #  ~180 LOC: + three-layer compress
+|   |-- s07_file_tasks.py          #  ~170 LOC: + task CRUD + deps
+|   |-- s08_background.py          #  ~160 LOC: + background threads
+|   |-- s09_team_messaging.py      #  ~340 LOC: + team + JSONL inboxes
+|   |-- s10_team_protocols.py      #  ~390 LOC: + shutdown + plan approval
+|   |-- s11_autonomous.py          #  ~490 LOC: + idle cycle + claim
+|   +-- s_full.py                  #  full combined reference
+|
+|-- web/                           # Interactive learning platform
+|   |-- src/agents/                #   TypeScript agent implementations
+|   |   |-- v0.ts ... v9.ts        #     run in browser, no sandbox
+|   |   +-- shared/                #     base class, API client, VFS
+|   |-- src/components/
+|   |   |-- inspector/             #   Live state inspector
+|   |   |-- simulator/             #   Step-through agent execution
+|   |   +-- architecture/          #   Flow diagrams, arch diagrams
+|   |-- src/hooks/
+|   |   +-- useAgentRunner.ts      #   Runs agent + feeds state
+|   +-- src/app/                   #   Next.js pages
+|       +-- [locale]/(learn)/
+|           |-- [version]/         #     Per-version learning page
+|           +-- playground/        #     Live agent playground
+|
+|-- docs/                          # Mental-model-first documentation
+|   |-- s01-the-agent-loop.md      #   11 session docs
+|   |-- ...
+|   +-- s11-autonomous-agent.md
+|
+|-- skills/                        # Skill files for s05
++-- .github/workflows/ci.yml      # CI: typecheck + test + build
+```
 
 ## Learning Path
 
 ```
-Start Here
-    |
-    v
-[v0: Bash Agent] ----------> "One tool is enough"
-    |                         16-196 lines
-    v
-[v1: Basic Agent] ----------> "The complete agent pattern"
-    |                          4 tools, ~417 lines
-    v
-[v2: Todo Agent] -----------> "Make plans explicit"
-    |                          +TodoManager, ~531 lines
-    v
-[v3: Subagent] -------------> "Divide and conquer"
-    |                          +Task tool, ~623 lines
-    v
-[v4: Skills Agent] ----------> "Domain expertise on-demand"
-    |                           +Skill tool, ~783 lines
-    v
-[v5: Compression Agent] ----> "Never forget, work forever"
-    |                          +ContextManager, ~896 lines
-    v
-[v6: Tasks Agent] ----------> "From sticky notes to kanban"
-    |                          +TaskManager, ~1075 lines
-    v
-[v7: Background Agent] -----> "Don't wait, keep working"
-    |                          +BackgroundManager, ~1142 lines
-    v
-[v8a: Team Foundation] --> "Creating and managing teammates"
-    |                       +TeammateManager, ~1395 lines
-    v
-[v8b: Messaging] --------> "Teammates that communicate"
-    |                       +SendMessage/Inbox, ~1557 lines
-    v
-[v8c: Coordination] -----> "Shared tasks and shutdown protocol"
-    |                       +SharedBoard/Protocol, ~1612 lines
-    v
-[v9: Autonomous Agent] -----> "A self-organizing team"
-                               +Idle cycle, ~1683 lines
-```
+Phase 1: THE LOOP                   Phase 2: PLANNING & KNOWLEDGE
+=================                   ==========================
+s01: Agent Loop                     s03: Structured Planning
+|  while + bash                     |  TodoManager + nag reminder
+|  "The entire agent is a loop"     |  "Make plans visible"
+|                                   |
++-> s02: Multi-Tool Dispatch        s04: Context Isolation
+    |  dispatch map routing         |  subagent with fresh messages
+    |  "The loop didn't change"     |  "Process isolation = context isolation"
+                                    |
+                                    s05: Knowledge Loading
+                                    |  SKILL.md + two-layer injection
+                                    |  "Load on demand, not upfront"
+                                    |
+                                    s06: Context Compression
+                                       three-layer compression pipeline
+                                       "Strategic forgetting"
 
-**Recommended approach:**
-1. Read and run v0 first - understand the core loop
-2. Compare v0 and v1 - see how tools evolve
-3. Study v2 for planning patterns
-4. Explore v3 for complex task decomposition
-5. Master v4 for building extensible agents
-6. Study v5 for context management and compression
-7. Explore v6 for persistent task tracking
-8. Understand v7 for parallel background execution
-9. Study v8a/v8b/v8c for team lifecycle and messaging
-      a. v8a - TeammateManager (creation, deletion, config, tool scoping)
-      b. v8b - Message protocol (5 types, JSONL inbox, inbox routing)
-      c. v8c - Shared task board, shutdown protocol, plan approval
-      d. Trace a full lifecycle across v8a -> v8b -> v8c
-10. Master v9 for autonomous multi-agent collaboration
-
-**Note:** v8 is split into three progressive sub-versions (v8a -> v8b -> v8c), each adding one concept. This makes the jump from v7 more gradual.
-
-## Learning Progression
-
-```
-v0(196) -> v1(417) -> v2(531) -> v3(623) -> v4(783)
-   |          |          |          |          |
- Bash      4 Tools    Planning   Subagent   Skills
-
--> v5(896) -> v6(1075) -> v7(1142) -> v8a(1395) -> v8b(1557) -> v8c(1612) -> v9(1683)
-     |           |            |            |            |            |            |
- Compress     Tasks      Background   Foundation   Messaging   Coordination  Autonomous
+Phase 3: PERSISTENCE                Phase 4: TEAMS
+=================                   =====================
+s07: File-Based Tasks               s09: Team Messaging
+|  TaskManager + dependency graph   |  TeammateManager + JSONL inboxes
+|  "State survives compression"     |  "Teammates that communicate"
+|                                   |
+s08: Background Execution           s10: Team Protocols
+   BackgroundManager + threads      |  shutdown + plan approval handshake
+   "Fire and forget"                |  "Same request_id, two applications"
+                                    |
+                                    s11: Autonomous Agent
+                                       idle cycle + task board polling
+                                       "The agent finds work itself"
 ```
 
 ## Quick Start
 
-```bash
-# Clone the repository
+### Interactive Web Platform (Recommended)
+
+Visit the deployed web app to explore all versions interactively:
+- Step-through simulator shows each agent loop iteration
+- State inspector reveals internal state in real-time
+- Live playground runs real agents in your browser (bring your API key)
+
+### Run Python Agents Locally
+
+```sh
+# Clone and install
 git clone https://github.com/shareAI-lab/learn-claude-code
 cd learn-claude-code
 
-# Install dependencies
 pip install -r requirements.txt
 
 # Configure API key
 cp .env.example .env
 # Edit .env with your ANTHROPIC_API_KEY
 
-# Run any version
-python v0_bash_agent.py         # Minimal (start here!)
-python v1_basic_agent.py        # Core agent loop
-python v2_todo_agent.py         # + Todo planning
-python v3_subagent.py           # + Subagents
-python v4_skills_agent.py       # + Skills
-python v5_compression_agent.py  # + Context compression
-python v6_tasks_agent.py        # + Task system
-python v7_background_agent.py   # + Background tasks
-python v8a_team_foundation.py  # + Team foundation
-python v8b_messaging.py        # + Team messaging
-python v8c_coordination.py     # + Team coordination
-python v9_autonomous_agent.py  # + Autonomous teams
+# Run any session
+python agents/s01_agent_loop.py       # Start here
+python agents/s11_autonomous.py       # Full autonomous team
 ```
 
-## Running Tests
+### Run TypeScript Agents (Web)
 
-```bash
-# Run full test suite
-python tests/run_all.py
+```sh
+cd web
+npm install
+npm run dev
+# Open http://localhost:3000/en/playground
+# Enter your Anthropic API key
+# Select a version and chat with the agent
+```
 
-# Run unit tests only
-python tests/test_unit.py
+## Session Comparison
 
-# Run tests for a specific version
-python -m pytest tests/test_v8a.py tests/test_v8b.py tests/test_v8c.py -v
+```
+Session  Title                 LOC  Tools Core Addition           Key Insight
+-------  --------------------  ---  ----- ---------------------   --------------------------
+s01      Agent Loop             70    1   while + bash            The entire agent is a loop
+s02      Multi-Tool Dispatch    90    4   dispatch map            The loop didn't change
+s03      Structured Planning   150    5   TodoManager + nag       Make plans visible
+s04      Context Isolation     130    5   run_subagent()          Process isolation
+s05      Knowledge Loading     150    5   SkillLoader 2-layer     Load on demand
+s06      Context Compression   180    5   3-layer compress        Strategic forgetting
+s07      File-Based Tasks      170    8   TaskManager + deps      State survives compression
+s08      Background Execution  160    6   BackgroundManager       Fire and forget
+s09      Team Messaging        340    9   Teammates + JSONL inbox Teammates that communicate
+s10      Team Protocols        390   12   shutdown + plan approval Same pattern, two domains
+s11      Autonomous Agent      490   14   idle cycle + claim      Self-organizing teams
 ```
 
 ## The Core Pattern
 
-Every coding agent is just this loop:
-
 ```python
-while True:
-    response = model(messages, tools)
-    if response.stop_reason != "tool_use":
-        return response.text
-    results = execute(response.tool_calls)
-    messages.append(results)
+# Every AI agent is this loop:
+def agent_loop(messages):
+    while True:
+        response = client.messages.create(
+            model=MODEL, system=SYSTEM,
+            messages=messages, tools=TOOLS,
+        )
+        messages.append({"role": "assistant",
+                         "content": response.content})
+
+        if response.stop_reason != "tool_use":
+            return
+
+        results = []
+        for block in response.content:
+            if block.type == "tool_use":
+                output = TOOL_HANDLERS[block.name](**block.input)
+                results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": output,
+                })
+        messages.append({"role": "user", "content": results})
 ```
 
-That's it. The model calls tools until done. Everything else is refinement.
+Each session adds ONE mechanism on top of this loop.
 
-## Version Comparison
+## Key Mechanisms
 
-| Version | Lines | Tools | Core Addition | Key Insight |
-|---------|-------|-------|---------------|-------------|
-| [v0](./v0_bash_agent.py) | ~196 | bash | Recursive subagents | One tool is enough |
-| [v1](./v1_basic_agent.py) | ~417 | bash, read, write, edit | Core loop | Model as Agent |
-| [v2](./v2_todo_agent.py) | ~531 | +TodoWrite | Explicit planning | Constraints enable complexity |
-| [v3](./v3_subagent.py) | ~623 | +Task | Context isolation | Clean context = better results |
-| [v4](./v4_skills_agent.py) | ~783 | +Skill | Knowledge loading | Expertise without retraining |
-| [v5](./v5_compression_agent.py) | ~896 | +ContextManager | 3-layer compression | Forgetting enables infinite work |
-| [v6](./v6_tasks_agent.py) | ~1075 | +TaskCreate/Get/Update/List | Persistent tasks | Sticky notes to kanban |
-| [v7](./v7_background_agent.py) | ~1142 | +TaskOutput/TaskStop | Background execution | Serial to parallel |
-| [v8a](./v8a_team_foundation.py) | ~1395 | +TeamCreate/TeamDelete | Team foundation | Building the team structure |
-| [v8b](./v8b_messaging.py) | ~1557 | +SendMessage/Inbox | Team messaging | Communication channels |
-| [v8c](./v8c_coordination.py) | ~1612 | +SharedBoard/Protocol | Team coordination | Command to collaboration |
-| [v9](./v9_autonomous_agent.py) | ~1683 | +Idle cycle/auto-claim | Autonomous teams | Collaboration to self-organization |
+| Mechanism            | Session | What It Does                                    |
+|----------------------|---------|-------------------------------------------------|
+| Agent loop           | s01     | `while (stop_reason == "tool_use")` loop        |
+| Tool dispatch        | s02     | Map of tool name -> handler function            |
+| Todo planning        | s03     | Create plan before execution, track completion   |
+| Context isolation    | s04     | Fresh message list per subagent                  |
+| Skill injection      | s05     | SKILL.md content injected via tool_result        |
+| Micro-compact        | s06     | Old tool results replaced with placeholders      |
+| Auto-compact         | s06     | LLM summarizes conversation when tokens > limit  |
+| Task CRUD + deps     | s07     | File-based tasks with dependency graph           |
+| Background execution | s08     | Threaded commands + notification queue           |
+| Teammate lifecycle   | s09     | Named persistent agents with config.json         |
+| File-based inbox     | s09     | JSONL messages, 5 types, per-teammate files      |
+| Shutdown protocol    | s10     | request_id based FSM for graceful shutdown       |
+| Plan approval        | s10     | Submit/review with request_id correlation        |
+| Idle cycle           | s11     | Poll board, auto-claim unclaimed tasks           |
 
-## Sub-Mechanism Guide
+## State Inspector
 
-Each version introduces one core class, but the real learning is in the sub-mechanisms. This map helps you find specific concepts:
-
-| Sub-Mechanism | Version | Key Code | What to Look For |
-|---------------|---------|----------|------------------|
-| **Agent loop** | v0-v1 | `agent_loop()` | The `while tool_use` loop pattern |
-| **Tool dispatch** | v1 | `process_tool_call()` | How tool_use blocks map to functions |
-| **Explicit planning** | v2 | `TodoManager` | Single `in_progress` constraint, system reminders |
-| **Context isolation** | v3 | `run_subagent()` | Fresh message list per subagent |
-| **Tool filtering** | v3 | `AGENT_TYPES` | Explore agents get read-only tools |
-| **Skill injection** | v4 | `SkillLoader` | Content prepended to system prompt |
-| **Microcompact** | v5 | `ContextManager.microcompact()` | Old tool outputs replaced with placeholders |
-| **Auto-compact** | v5 | `ContextManager.auto_compact()` | 85.3% threshold (formula-based) triggers API summarization |
-| **Large output handling** | v5 | `ContextManager.handle_large_output()` | >40K tokens saved to disk, preview returned |
-| **Transcript persistence** | v5 | `ContextManager.save_transcript()` | Full history appended to `.jsonl` |
-| **Task CRUD** | v6 | `TaskManager` | create/get/update/list with JSON persistence |
-| **Dependency graph** | v6 | `addBlocks/addBlockedBy` | Completion auto-unblocks dependents |
-| **Background execution** | v7 | `BackgroundManager.run_in_background()` | Thread-based, immediate task_id return |
-| **ID prefix convention** | v7 | `_PREFIXES` | `b`=bash, `a`=agent (v8 adds `t`=teammate) |
-| **Notification bus** | v7 | `drain_notifications()` | Queue drained before each API call |
-| **Notification injection** | v7 | attachment-based notification | Injected into last user message |
-| **Teammate lifecycle** | v8a | `_teammate_loop()` | Work -> check inbox -> exit pattern |
-| **Tool scoping** | v8a | `TEAMMATE_TOOLS` | Teammates get 9 tools (no TeamCreate/Delete/Task/Skill) |
-| **File-based inbox** | v8b | `send_message()/check_inbox()` | JSONL format, per-teammate files |
-| **Message protocol** | v8b | `MESSAGE_TYPES` | 5 types: message, broadcast, shutdown_req/resp, plan_approval |
-| **Shutdown protocol** | v8c | `SharedBoard/Protocol` | Graceful shutdown and plan approval |
-| **Idle cycle** | v9 | `_teammate_loop()` | active -> idle -> poll inbox -> wake -> active |
-| **Task claiming** | v9 | `_teammate_loop()` | Idle teammates auto-claim unclaimed tasks |
-| **Identity preservation** | v9 | `auto_compact` + identity | Teammate name/role re-injected after compression |
-
-## File Structure
+The web platform includes a state inspector that shows internal agent state:
 
 ```
-learn-claude-code/
-|-- v0_bash_agent.py          # ~196 lines: 1 tool, recursive subagents
-|-- v0_bash_agent_mini.py     # ~16 lines: extreme compression
-|-- v1_basic_agent.py         # ~417 lines: 4 tools, core loop
-|-- v2_todo_agent.py          # ~531 lines: + TodoManager
-|-- v3_subagent.py            # ~623 lines: + Task tool, agent registry
-|-- v4_skills_agent.py        # ~783 lines: + Skill tool, SkillLoader
-|-- v5_compression_agent.py   # ~896 lines: + ContextManager, 3-layer compression
-|-- v6_tasks_agent.py         # ~1075 lines: + TaskManager, CRUD with dependencies
-|-- v7_background_agent.py    # ~1142 lines: + BackgroundManager, parallel execution
-|-- v8a_team_foundation.py  # ~1395 lines: + TeammateManager, team lifecycle
-|-- v8b_messaging.py        # ~1557 lines: + SendMessage, inbox, message protocol
-|-- v8c_coordination.py     # ~1612 lines: + Shared task board, shutdown protocol
-|-- v9_autonomous_agent.py    # ~1683 lines: + Idle cycle, auto-claim, identity preservation
-|-- skills/                   # Example skills (pdf, code-review, mcp-builder, agent-builder)
-|-- docs/                     # Technical documentation (EN + ZH + JA)
-|-- articles/                 # Blog-style articles (ZH)
-+-- tests/                    # Unit, feature, and integration tests
++---------------------------+-------------------+
+|                           |  State Inspector   |
+|  Chat / Simulator         |                    |
+|                           |  messages[]: 4     |
+|  [User] Create hello.py   |  loop: 2          |
+|  [Assistant] Creating...  |  tokens: 1,247    |
+|  [Tool: bash] echo ...    |  tools: [bash]    |
+|  [Result] File written    |  stop: tool_use   |
+|                           |                    |
++---------------------------+-------------------+
+```
+
+Each session shows session-specific state:
+- s03: todo checklist with completion status
+- s06: token gauge bar with compression threshold
+- s07: task dependency graph with status colors
+- s08: background thread timeline
+- s09-s11: team roster, inbox viewer, protocol FSM, idle cycle
+
+## Running Tests
+
+```sh
+cd web
+npx vitest run          # Unit + integration tests
+npx tsc --noEmit        # Type check
+npm run build           # Full build
 ```
 
 ## Documentation
 
-### Technical Tutorials (docs/)
+Each doc follows a mental-model-first structure with ASCII diagrams:
 
-- [v0: Bash is All You Need](./docs/v0-bash-is-all-you-need.md)
-- [v1: Model as Agent](./docs/v1-model-as-agent.md)
-- [v2: Structured Planning](./docs/v2-structured-planning.md)
-- [v3: Subagent Mechanism](./docs/v3-subagent-mechanism.md)
-- [v4: Skills Mechanism](./docs/v4-skills-mechanism.md)
-- [v5: Context Compression](./docs/v5-context-compression.md)
-- [v6: Tasks System](./docs/v6-tasks-system.md)
-- [v7: Background Tasks](./docs/v7-background-tasks.md)
-- [v8: Team Messaging](./docs/v8-team-messaging.md)
-- [v9: Autonomous Teams](./docs/v9-autonomous-teams.md)
-
-### Articles
-
-See [articles/](./articles/) for blog-style explanations.
-
-## Using the Skills System
-
-### Example Skills Included
-
-| Skill | Purpose |
-|-------|---------|
-| [agent-builder](./skills/agent-builder/) | Meta-skill: how to build agents |
-| [code-review](./skills/code-review/) | Systematic code review methodology |
-| [pdf](./skills/pdf/) | PDF manipulation patterns |
-| [mcp-builder](./skills/mcp-builder/) | MCP server development |
-
-### Scaffold a New Agent
-
-```bash
-# Use the agent-builder skill to create a new project
-python skills/agent-builder/scripts/init_agent.py my-agent
-
-# Specify complexity level
-python skills/agent-builder/scripts/init_agent.py my-agent --level 0  # Minimal
-python skills/agent-builder/scripts/init_agent.py my-agent --level 1  # 4 tools
-```
-
-### Install Skills for Production
-
-```bash
-# Kode CLI (recommended)
-kode plugins install https://github.com/shareAI-lab/shareAI-skills
-
-# Claude Code
-claude plugins install https://github.com/shareAI-lab/shareAI-skills
-```
-
-## Configuration
-
-```bash
-# .env file options
-ANTHROPIC_API_KEY=sk-ant-xxx      # Required: Your API key
-ANTHROPIC_BASE_URL=https://...    # Optional: For API proxies
-MODEL_ID=claude-sonnet-4-5-20250929  # Optional: Model selection
-```
-
-## Related Projects
-
-| Repository | Description |
-|------------|-------------|
-| [Kode](https://github.com/shareAI-lab/Kode) | Production-ready open source agent CLI |
-| [shareAI-skills](https://github.com/shareAI-lab/shareAI-skills) | Production skills collection |
-| [Agent Skills Spec](https://agentskills.io/specification) | Official specification |
-
-## Philosophy
-
-> **The model is 80%. Code is 20%.**
-
-Modern agents like Kode and Claude Code work not because of clever engineering, but because the model is trained to be an agent. Our job is to give it tools and stay out of the way.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues and pull requests.
-
-- Add new example skills in `skills/`
-- Improve documentation in `docs/`
-- Report bugs or suggest features via [Issues](https://github.com/shareAI-lab/learn-claude-code/issues)
+- [s01: The Agent Loop](./docs/s01-the-agent-loop.md)
+- [s02: Multi-Tool Dispatch](./docs/s02-multi-tool-dispatch.md)
+- [s03: Structured Planning](./docs/s03-structured-planning.md)
+- [s04: Context Isolation](./docs/s04-context-isolation.md)
+- [s05: Knowledge Loading](./docs/s05-knowledge-loading.md)
+- [s06: Context Compression](./docs/s06-context-compression.md)
+- [s07: File-Based Tasks](./docs/s07-file-based-tasks.md)
+- [s08: Background Execution](./docs/s08-background-execution.md)
+- [s09: Team Messaging](./docs/s09-team-messaging.md)
+- [s10: Team Protocols](./docs/s10-team-protocols.md)
+- [s11: Autonomous Agent](./docs/s11-autonomous-agent.md)
 
 ## License
 
@@ -331,6 +264,4 @@ MIT
 
 ---
 
-**Model as Agent. That's the whole secret.**
-
-[@baicai003](https://x.com/baicai003) | [shareAI Lab](https://github.com/shareAI-lab)
+**The model is the agent. Our job is to give it tools and stay out of the way.**

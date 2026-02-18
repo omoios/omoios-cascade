@@ -1,0 +1,44 @@
+{
+  "version": "s10",
+  "title": "Team Messaging",
+  "description": "Teammates communicate via file-based inboxes",
+  "steps": [
+    {
+      "type": "user_message",
+      "content": "frontend-dev needs the API schema from backend-dev",
+      "annotation": "Inter-agent communication needed"
+    },
+    {
+      "type": "tool_call",
+      "content": "send_message(\n  to: \"backend-dev\",\n  content: \"Please share the API schema for user endpoints\",\n  type: \"message\"\n)",
+      "toolName": "send_message",
+      "annotation": "Message written to backend-dev's inbox file"
+    },
+    {
+      "type": "system_event",
+      "content": "[Inbox] Message delivered to .inbox/backend-dev.jsonl\nMessage types: message | task_update | shutdown_request | plan_approval | broadcast",
+      "annotation": "Async JSONL inboxes decouple sender from receiver"
+    },
+    {
+      "type": "tool_result",
+      "content": "Message sent to backend-dev",
+      "toolName": "send_message",
+      "annotation": "Delivery is async -- backend-dev reads on next cycle"
+    },
+    {
+      "type": "system_event",
+      "content": "[backend-dev] Checking inbox... 1 new message\nFrom: frontend-dev\nContent: \"Please share the API schema for user endpoints\"",
+      "annotation": "backend-dev reads inbox on its next iteration"
+    },
+    {
+      "type": "system_event",
+      "content": "[backend-dev -> frontend-dev] Reply delivered to .inbox/frontend-dev.jsonl\nContent: \"API schema: GET /users, POST /users, GET /users/:id\"",
+      "annotation": "Reply flows through the same inbox mechanism"
+    },
+    {
+      "type": "assistant_text",
+      "content": "backend-dev has shared the API schema with frontend-dev. Communication is flowing through file-based inboxes.",
+      "annotation": "5 message types enable rich coordination without shared memory"
+    }
+  ]
+}

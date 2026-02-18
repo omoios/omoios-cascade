@@ -117,7 +117,39 @@ export function ArchDiagram({ version }: ArchDiagramProps) {
         const colorClasses = getLayerColorClasses(cls.introducedIn);
 
         return (
-          <motion.div
+          <div key={cls.name}>
+            {i > 0 && (
+              <div className="flex justify-center py-1">
+                <motion.svg
+                  width="24"
+                  height="20"
+                  viewBox="0 0 24 20"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: i * 0.08 + 0.05 }}
+                >
+                  <motion.line
+                    x1={12}
+                    y1={0}
+                    x2={12}
+                    y2={14}
+                    stroke="var(--color-text-secondary)"
+                    strokeWidth={1.5}
+                    initial={{ pathLength: 0 }}
+                    animate={{ pathLength: 1 }}
+                    transition={{ duration: 0.3, delay: i * 0.08 }}
+                  />
+                  <motion.polygon
+                    points="7,12 12,19 17,12"
+                    fill="var(--color-text-secondary)"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: i * 0.08 + 0.2 }}
+                  />
+                </motion.svg>
+              </div>
+            )}
+            <motion.div
             key={cls.name}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -164,6 +196,7 @@ export function ArchDiagram({ version }: ArchDiagramProps) {
               </div>
             </div>
           </motion.div>
+          </div>
         );
       })}
 

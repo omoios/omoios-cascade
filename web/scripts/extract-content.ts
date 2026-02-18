@@ -16,15 +16,15 @@ const DOCS_DIR = path.join(REPO_ROOT, "docs");
 const OUT_DIR = path.join(WEB_DIR, "src", "data", "generated");
 
 // Map python filenames to version IDs
-// v0_bash_agent_mini.py -> v0_mini
-// v0_bash_agent.py -> v0
-// v8a_team_foundation.py -> v8a
+// s01_agent_loop.py -> s01
+// s02_multi_tool.py -> s02
+// s_full.py -> s_full (reference agent, typically skipped)
 function filenameToVersionId(filename: string): string | null {
   const base = path.basename(filename, ".py");
-  // Special case: v0_bash_agent_mini -> v0_mini
-  if (base === "v0_bash_agent_mini") return "v0_mini";
+  if (base === "s_full") return "s_full";
+  if (base === "__init__") return null;
 
-  const match = base.match(/^(v\d+[a-c]?)_/);
+  const match = base.match(/^(s\d+[a-c]?)_/);
   if (!match) return null;
   return match[1];
 }
@@ -101,8 +101,8 @@ function countLoc(lines: string[]): number {
 
 // Detect locale from doc filename
 function detectLocale(filename: string): "en" | "zh" | "ja" {
-  // Strip the version prefix (e.g., "v0-")
-  const afterPrefix = filename.replace(/^v\d+[a-c]?-/, "");
+  // Strip the version prefix (e.g., "s01-")
+  const afterPrefix = filename.replace(/^s\d+[a-c]?-/, "");
 
   // Check for Japanese (katakana/hiragana)
   if (/[\u3040-\u309F\u30A0-\u30FF]/.test(afterPrefix)) return "ja";
@@ -113,9 +113,9 @@ function detectLocale(filename: string): "en" | "zh" | "ja" {
   return "en";
 }
 
-// Extract version from doc filename (e.g., "v0-bash-is-all-you-need.md" -> "v0")
+// Extract version from doc filename (e.g., "s01-the-agent-loop.md" -> "s01")
 function extractDocVersion(filename: string): string | null {
-  const m = filename.match(/^(v\d+[a-c]?)-/);
+  const m = filename.match(/^(s\d+[a-c]?)-/);
   return m ? m[1] : null;
 }
 
@@ -137,7 +137,7 @@ function main() {
   // 1. Read all agent files
   const agentFiles = fs
     .readdirSync(AGENTS_DIR)
-    .filter((f) => f.startsWith("v") && f.endsWith(".py"));
+    .filter((f) => f.startsWith("s") && f.endsWith(".py"));
 
   console.log(`  Found ${agentFiles.length} agent files`);
 

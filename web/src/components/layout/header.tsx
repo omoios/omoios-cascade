@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { key: "timeline", href: "/timeline" },
   { key: "compare", href: "/compare" },
   { key: "layers", href: "/layers" },
+  { key: "playground", href: "/playground" },
 ] as const;
 
 const LOCALES = [

@@ -1,0 +1,39 @@
+{
+  "version": "s09",
+  "title": "Team Foundation",
+  "description": "Agent creates and manages persistent teammates",
+  "steps": [
+    {
+      "type": "user_message",
+      "content": "Build a full-stack app: frontend in React, backend in Python, with tests",
+      "annotation": "Large task requiring team collaboration"
+    },
+    {
+      "type": "assistant_text",
+      "content": "I'll create a team with specialized teammates for this.",
+      "annotation": "TeammateManager enables persistent multi-agent collaboration"
+    },
+    {
+      "type": "tool_call",
+      "content": "create_team([\n  { name: \"frontend-dev\", role: \"React specialist\" },\n  { name: \"backend-dev\", role: \"Python API specialist\" },\n  { name: \"tester\", role: \"QA engineer\" }\n])",
+      "toolName": "teammate_manager",
+      "annotation": "TeammateManager spawns 3 persistent teammates"
+    },
+    {
+      "type": "system_event",
+      "content": "[TeammateManager] Team created:\n  frontend-dev [idle] - React specialist\n  backend-dev [idle] - Python API specialist\n  tester [idle] - QA engineer",
+      "annotation": "Unlike subagents (v3), teammates persist across tasks"
+    },
+    {
+      "type": "tool_result",
+      "content": "Team of 3 created. All teammates idle and ready for task assignment.",
+      "toolName": "teammate_manager",
+      "annotation": "Teammates have identity and state tracking"
+    },
+    {
+      "type": "assistant_text",
+      "content": "Team is ready. I'll assign tasks to each teammate via the task board.",
+      "annotation": "Persistent teammates vs one-shot subagents: they remember context"
+    }
+  ]
+}

@@ -34,3 +34,39 @@ export interface VersionIndex {
   versions: AgentVersion[];
   diffs: VersionDiff[];
 }
+
+export type SimStepType =
+  | "user_message"
+  | "assistant_text"
+  | "tool_call"
+  | "tool_result"
+  | "system_event";
+
+export interface SimStep {
+  type: SimStepType;
+  content: string;
+  annotation: string;
+  toolName?: string;
+  toolInput?: string;
+}
+
+export interface Scenario {
+  version: string;
+  title: string;
+  description: string;
+  steps: SimStep[];
+}
+
+export interface FlowNode {
+  id: string;
+  label: string;
+  type: "start" | "process" | "decision" | "subprocess" | "end";
+  x: number;
+  y: number;
+}
+
+export interface FlowEdge {
+  from: string;
+  to: string;
+  label?: string;
+}

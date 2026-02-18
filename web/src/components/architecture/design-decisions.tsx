@@ -6,19 +6,17 @@ import { useTranslations, useLocale } from "@/lib/i18n";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-import v0Annotations from "@/data/annotations/v0.json";
-import v1Annotations from "@/data/annotations/v1.json";
-import v2Annotations from "@/data/annotations/v2.json";
-import v3Annotations from "@/data/annotations/v3.json";
-import v4Annotations from "@/data/annotations/v4.json";
-import v5Annotations from "@/data/annotations/v5.json";
-import v6Annotations from "@/data/annotations/v6.json";
-import v7Annotations from "@/data/annotations/v7.json";
-import v8aAnnotations from "@/data/annotations/v8a.json";
-import v8bAnnotations from "@/data/annotations/v8b.json";
-import v8cAnnotations from "@/data/annotations/v8c.json";
-import v0_miniAnnotations from "@/data/annotations/v0_mini.json";
-import v9Annotations from "@/data/annotations/v9.json";
+import s01Annotations from "@/data/annotations/s01.json";
+import s02Annotations from "@/data/annotations/s02.json";
+import s03Annotations from "@/data/annotations/s03.json";
+import s04Annotations from "@/data/annotations/s04.json";
+import s05Annotations from "@/data/annotations/s05.json";
+import s06Annotations from "@/data/annotations/s06.json";
+import s07Annotations from "@/data/annotations/s07.json";
+import s08Annotations from "@/data/annotations/s08.json";
+import s09Annotations from "@/data/annotations/s09.json";
+import s10Annotations from "@/data/annotations/s10.json";
+import s11Annotations from "@/data/annotations/s11.json";
 
 interface Decision {
   id: string;
@@ -35,19 +33,17 @@ interface AnnotationFile {
 }
 
 const ANNOTATIONS: Record<string, AnnotationFile> = {
-  v0_mini: v0_miniAnnotations as AnnotationFile,
-  v0: v0Annotations as AnnotationFile,
-  v1: v1Annotations as AnnotationFile,
-  v2: v2Annotations as AnnotationFile,
-  v3: v3Annotations as AnnotationFile,
-  v4: v4Annotations as AnnotationFile,
-  v5: v5Annotations as AnnotationFile,
-  v6: v6Annotations as AnnotationFile,
-  v7: v7Annotations as AnnotationFile,
-  v8a: v8aAnnotations as AnnotationFile,
-  v8b: v8bAnnotations as AnnotationFile,
-  v8c: v8cAnnotations as AnnotationFile,
-  v9: v9Annotations as AnnotationFile,
+  s01: s01Annotations as AnnotationFile,
+  s02: s02Annotations as AnnotationFile,
+  s03: s03Annotations as AnnotationFile,
+  s04: s04Annotations as AnnotationFile,
+  s05: s05Annotations as AnnotationFile,
+  s06: s06Annotations as AnnotationFile,
+  s07: s07Annotations as AnnotationFile,
+  s08: s08Annotations as AnnotationFile,
+  s09: s09Annotations as AnnotationFile,
+  s10: s10Annotations as AnnotationFile,
+  s11: s11Annotations as AnnotationFile,
 };
 
 interface DesignDecisionsProps {
