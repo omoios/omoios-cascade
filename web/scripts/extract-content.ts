@@ -126,6 +126,14 @@ function main() {
   console.log(`  Agents dir: ${AGENTS_DIR}`);
   console.log(`  Docs dir: ${DOCS_DIR}`);
 
+  // Skip extraction if source directories don't exist (e.g. Vercel build).
+  // Pre-committed generated data will be used instead.
+  if (!fs.existsSync(AGENTS_DIR)) {
+    console.log("  Agents directory not found, skipping extraction.");
+    console.log("  Using pre-committed generated data.");
+    return;
+  }
+
   // 1. Read all agent files
   const agentFiles = fs
     .readdirSync(AGENTS_DIR)
