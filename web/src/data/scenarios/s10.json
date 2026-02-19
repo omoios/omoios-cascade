@@ -1,44 +1,38 @@
 {
   "version": "s10",
-  "title": "Team Messaging",
-  "description": "Teammates communicate via file-based inboxes",
+  "title": "Team Protocols",
+  "description": "Request-response protocols for shutdown and plan approval",
   "steps": [
     {
       "type": "user_message",
-      "content": "frontend-dev needs the API schema from backend-dev",
-      "annotation": "Inter-agent communication needed"
+      "content": "Work is done. Shut down the team gracefully.",
+      "annotation": "Can't just kill threads -- need coordinated shutdown"
     },
     {
       "type": "tool_call",
-      "content": "send_message(\n  to: \"backend-dev\",\n  content: \"Please share the API schema for user endpoints\",\n  type: \"message\"\n)",
-      "toolName": "send_message",
-      "annotation": "Message written to backend-dev's inbox file"
+      "content": "shutdown_request(\n  teammate: \"backend-dev\",\n  request_id: \"req_abc123\"\n)",
+      "toolName": "shutdown_teammate",
+      "annotation": "request_id correlates the request with the response"
     },
     {
       "type": "system_event",
-      "content": "[Inbox] Message delivered to .inbox/backend-dev.jsonl\nMessage types: message | task_update | shutdown_request | plan_approval | broadcast",
-      "annotation": "Async JSONL inboxes decouple sender from receiver"
-    },
-    {
-      "type": "tool_result",
-      "content": "Message sent to backend-dev",
-      "toolName": "send_message",
-      "annotation": "Delivery is async -- backend-dev reads on next cycle"
+      "content": "[Shutdown FSM] req_abc123: pending\n  Lead -> backend-dev inbox:\n  { type: \"shutdown_request\", request_id: \"req_abc123\" }",
+      "annotation": "FSM tracks state: pending -> approved | rejected"
     },
     {
       "type": "system_event",
-      "content": "[backend-dev] Checking inbox... 1 new message\nFrom: frontend-dev\nContent: \"Please share the API schema for user endpoints\"",
-      "annotation": "backend-dev reads inbox on its next iteration"
+      "content": "[backend-dev] Received shutdown request req_abc123\n  Current task: none (idle)\n  Decision: approve\n  -> lead inbox: { type: \"shutdown_response\", request_id: \"req_abc123\", approve: true }",
+      "annotation": "Teammate decides whether to approve based on its own state"
     },
     {
       "type": "system_event",
-      "content": "[backend-dev -> frontend-dev] Reply delivered to .inbox/frontend-dev.jsonl\nContent: \"API schema: GET /users, POST /users, GET /users/:id\"",
-      "annotation": "Reply flows through the same inbox mechanism"
+      "content": "[Shutdown FSM] req_abc123: approved\n  backend-dev thread stopped\n  Status: idle -> shutdown",
+      "annotation": "Same request_id pattern works for plan approval too"
     },
     {
       "type": "assistant_text",
-      "content": "backend-dev has shared the API schema with frontend-dev. Communication is flowing through file-based inboxes.",
-      "annotation": "5 message types enable rich coordination without shared memory"
+      "content": "backend-dev shut down gracefully. The same request_id + FSM pattern handles plan approval: teammate submits plan, lead approves/rejects with the correlated request_id.",
+      "annotation": "One pattern (request_id correlation), two applications (shutdown + plan approval)"
     }
   ]
 }

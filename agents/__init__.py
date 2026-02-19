@@ -1,2 +1,2 @@
-# agents/ - Python teaching agents (s01-s13) + reference agent (s_full)
+# agents/ - Python teaching agents (s01-s11) + reference agent (s_full)
 # Each file is self-contained and runnable: python agents/s01_agent_loop.py

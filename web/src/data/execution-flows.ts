@@ -69,6 +69,56 @@ export const EXECUTION_FLOWS: Record<string, FlowDefinition> = {
       { from: "append", to: "llm" },
     ],
   },
+  s04: {
+    nodes: [
+      { id: "start", label: "User Input", type: "start", x: COL_CENTER, y: 30 },
+      { id: "llm", label: "LLM Call", type: "process", x: COL_CENTER, y: 110 },
+      { id: "tool_check", label: "tool_use?", type: "decision", x: COL_CENTER, y: 190 },
+      { id: "is_task", label: "task tool?", type: "decision", x: COL_LEFT, y: 280 },
+      { id: "spawn", label: "Spawn Subagent\n(fresh messages[])", type: "subprocess", x: 60, y: 380 },
+      { id: "sub_loop", label: "Subagent Loop", type: "process", x: 60, y: 460 },
+      { id: "exec", label: "Execute Tool", type: "subprocess", x: COL_LEFT + 80, y: 380 },
+      { id: "append", label: "Append Result", type: "process", x: COL_CENTER, y: 540 },
+      { id: "end", label: "Output", type: "end", x: COL_RIGHT, y: 280 },
+    ],
+    edges: [
+      { from: "start", to: "llm" },
+      { from: "llm", to: "tool_check" },
+      { from: "tool_check", to: "is_task", label: "yes" },
+      { from: "tool_check", to: "end", label: "no" },
+      { from: "is_task", to: "spawn", label: "task" },
+      { from: "is_task", to: "exec", label: "other" },
+      { from: "spawn", to: "sub_loop" },
+      { from: "sub_loop", to: "append" },
+      { from: "exec", to: "append" },
+      { from: "append", to: "llm" },
+    ],
+  },
+  s05: {
+    nodes: [
+      { id: "start", label: "User Input", type: "start", x: COL_CENTER, y: 30 },
+      { id: "llm", label: "LLM Call", type: "process", x: COL_CENTER, y: 110 },
+      { id: "tool_check", label: "tool_use?", type: "decision", x: COL_CENTER, y: 190 },
+      { id: "is_skill", label: "load_skill?", type: "decision", x: COL_LEFT, y: 280 },
+      { id: "load", label: "Read SKILL.md", type: "subprocess", x: 60, y: 370 },
+      { id: "inject", label: "Inject via\ntool_result", type: "process", x: 60, y: 450 },
+      { id: "exec", label: "Execute Tool", type: "subprocess", x: COL_LEFT + 80, y: 370 },
+      { id: "append", label: "Append Result", type: "process", x: COL_CENTER, y: 530 },
+      { id: "end", label: "Output", type: "end", x: COL_RIGHT, y: 280 },
+    ],
+    edges: [
+      { from: "start", to: "llm" },
+      { from: "llm", to: "tool_check" },
+      { from: "tool_check", to: "is_skill", label: "yes" },
+      { from: "tool_check", to: "end", label: "no" },
+      { from: "is_skill", to: "load", label: "skill" },
+      { from: "is_skill", to: "exec", label: "other" },
+      { from: "load", to: "inject" },
+      { from: "inject", to: "append" },
+      { from: "exec", to: "append" },
+      { from: "append", to: "llm" },
+    ],
+  },
   s06: {
     nodes: [
       { id: "start", label: "User Input", type: "start", x: COL_CENTER, y: 30 },
@@ -90,6 +140,31 @@ export const EXECUTION_FLOWS: Record<string, FlowDefinition> = {
       { from: "tool_check", to: "end", label: "no" },
       { from: "exec", to: "append" },
       { from: "append", to: "compress_check" },
+    ],
+  },
+  s07: {
+    nodes: [
+      { id: "start", label: "User Input", type: "start", x: COL_CENTER, y: 30 },
+      { id: "llm", label: "LLM Call", type: "process", x: COL_CENTER, y: 110 },
+      { id: "tool_check", label: "tool_use?", type: "decision", x: COL_CENTER, y: 190 },
+      { id: "is_task", label: "task_manager?", type: "decision", x: COL_LEFT, y: 280 },
+      { id: "crud", label: "CRUD Task\n(file-based)", type: "subprocess", x: 60, y: 370 },
+      { id: "dep_check", label: "Check\nDependencies", type: "process", x: 60, y: 450 },
+      { id: "exec", label: "Execute Tool", type: "subprocess", x: COL_LEFT + 80, y: 370 },
+      { id: "append", label: "Append Result", type: "process", x: COL_CENTER, y: 530 },
+      { id: "end", label: "Output", type: "end", x: COL_RIGHT, y: 280 },
+    ],
+    edges: [
+      { from: "start", to: "llm" },
+      { from: "llm", to: "tool_check" },
+      { from: "tool_check", to: "is_task", label: "yes" },
+      { from: "tool_check", to: "end", label: "no" },
+      { from: "is_task", to: "crud", label: "task" },
+      { from: "is_task", to: "exec", label: "other" },
+      { from: "crud", to: "dep_check" },
+      { from: "dep_check", to: "append" },
+      { from: "exec", to: "append" },
+      { from: "append", to: "llm" },
     ],
   },
   s08: {
@@ -117,6 +192,60 @@ export const EXECUTION_FLOWS: Record<string, FlowDefinition> = {
       { from: "notify", to: "llm" },
     ],
   },
+  s09: {
+    nodes: [
+      { id: "start", label: "User Input", type: "start", x: COL_CENTER, y: 30 },
+      { id: "llm", label: "LLM Call\n(team lead)", type: "process", x: COL_CENTER, y: 110 },
+      { id: "tool_check", label: "tool_use?", type: "decision", x: COL_CENTER, y: 200 },
+      { id: "is_team", label: "Team tool?", type: "decision", x: COL_LEFT, y: 290 },
+      { id: "spawn", label: "Spawn\nTeammate", type: "subprocess", x: 60, y: 390 },
+      { id: "msg", label: "Send Message\n(JSONL inbox)", type: "subprocess", x: 60, y: 470 },
+      { id: "exec", label: "Execute Tool", type: "subprocess", x: COL_LEFT + 80, y: 390 },
+      { id: "append", label: "Append Result", type: "process", x: COL_CENTER, y: 550 },
+      { id: "end", label: "Output", type: "end", x: COL_RIGHT, y: 290 },
+      { id: "teammate", label: "Teammate Agent\n(own loop)", type: "process", x: COL_RIGHT, y: 470 },
+    ],
+    edges: [
+      { from: "start", to: "llm" },
+      { from: "llm", to: "tool_check" },
+      { from: "tool_check", to: "is_team", label: "yes" },
+      { from: "tool_check", to: "end", label: "no" },
+      { from: "is_team", to: "spawn", label: "spawn" },
+      { from: "is_team", to: "exec", label: "other" },
+      { from: "spawn", to: "teammate" },
+      { from: "spawn", to: "msg" },
+      { from: "msg", to: "append" },
+      { from: "exec", to: "append" },
+      { from: "append", to: "llm" },
+    ],
+  },
+  s10: {
+    nodes: [
+      { id: "start", label: "User Input", type: "start", x: COL_CENTER, y: 30 },
+      { id: "llm", label: "LLM Call\n(team lead)", type: "process", x: COL_CENTER, y: 110 },
+      { id: "tool_check", label: "tool_use?", type: "decision", x: COL_CENTER, y: 200 },
+      { id: "is_proto", label: "Protocol?", type: "decision", x: COL_LEFT, y: 290 },
+      { id: "shutdown", label: "Shutdown\nRequest", type: "subprocess", x: 60, y: 390 },
+      { id: "fsm", label: "FSM:\npending->approved", type: "process", x: 60, y: 470 },
+      { id: "exec", label: "Execute Tool", type: "subprocess", x: COL_LEFT + 80, y: 390 },
+      { id: "append", label: "Append Result", type: "process", x: COL_CENTER, y: 550 },
+      { id: "end", label: "Output", type: "end", x: COL_RIGHT, y: 290 },
+      { id: "teammate", label: "Teammate\nreceives request_id", type: "process", x: COL_RIGHT, y: 470 },
+    ],
+    edges: [
+      { from: "start", to: "llm" },
+      { from: "llm", to: "tool_check" },
+      { from: "tool_check", to: "is_proto", label: "yes" },
+      { from: "tool_check", to: "end", label: "no" },
+      { from: "is_proto", to: "shutdown", label: "shutdown" },
+      { from: "is_proto", to: "exec", label: "other" },
+      { from: "shutdown", to: "fsm" },
+      { from: "fsm", to: "teammate" },
+      { from: "teammate", to: "append" },
+      { from: "exec", to: "append" },
+      { from: "append", to: "llm" },
+    ],
+  },
   s11: {
     nodes: [
       { id: "start", label: "User Input", type: "start", x: COL_CENTER, y: 30 },
@@ -127,7 +256,7 @@ export const EXECUTION_FLOWS: Record<string, FlowDefinition> = {
       { id: "append", label: "Append Result", type: "process", x: COL_LEFT, y: 410 },
       { id: "end", label: "Output", type: "end", x: COL_RIGHT, y: 340 },
       { id: "idle", label: "Idle Cycle", type: "process", x: COL_RIGHT, y: 420 },
-      { id: "poll", label: "Poll Tasks", type: "subprocess", x: COL_RIGHT, y: 500 },
+      { id: "poll", label: "Poll Tasks\n+ Auto-Claim", type: "subprocess", x: COL_RIGHT, y: 500 },
     ],
     edges: [
       { from: "start", to: "inbox" },
@@ -145,10 +274,5 @@ export const EXECUTION_FLOWS: Record<string, FlowDefinition> = {
 };
 
 export function getFlowForVersion(version: string): FlowDefinition | null {
-  if (EXECUTION_FLOWS[version]) return EXECUTION_FLOWS[version];
-  if (version === "s09" || version === "s10")
-    return EXECUTION_FLOWS["s11"] ?? null;
-  if (version === "s04" || version === "s05" || version === "s07")
-    return EXECUTION_FLOWS["s03"] ?? null;
-  return EXECUTION_FLOWS["s01"] ?? null;
+  return EXECUTION_FLOWS[version] ?? null;
 }

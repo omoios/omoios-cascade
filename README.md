@@ -32,21 +32,21 @@ learn-claude-code/
 |
 |-- agents/                        # Python reference implementations
 |   |-- s01_agent_loop.py          #   ~70 LOC: while loop + bash
-|   |-- s02_multi_tool.py          #   ~90 LOC: + multi-tool dispatch
-|   |-- s03_structured_planning.py #  ~150 LOC: + TodoManager
-|   |-- s04_context_isolation.py   #  ~130 LOC: + subagent spawn
-|   |-- s05_knowledge_loading.py   #  ~150 LOC: + skill injection
-|   |-- s06_compression.py         #  ~180 LOC: + three-layer compress
-|   |-- s07_file_tasks.py          #  ~170 LOC: + task CRUD + deps
+|   |-- s02_multi_tool.py          #   ~90 LOC: + Read, Write, Edit, Bash
+|   |-- s03_structured_planning.py #  ~150 LOC: + TodoWrite
+|   |-- s04_context_isolation.py   #  ~130 LOC: + Task tool / subagents
+|   |-- s05_knowledge_loading.py   #  ~150 LOC: + SKILL.md injection
+|   |-- s06_compression.py         #  ~180 LOC: + /compact (3-layer)
+|   |-- s07_file_tasks.py          #  ~170 LOC: + Tasks API + deps
 |   |-- s08_background.py          #  ~160 LOC: + background threads
-|   |-- s09_team_messaging.py      #  ~340 LOC: + team + JSONL inboxes
+|   |-- s09_team_messaging.py      #  ~340 LOC: + Agent Teams + mailboxes
 |   |-- s10_team_protocols.py      #  ~390 LOC: + shutdown + plan approval
-|   |-- s11_autonomous.py          #  ~490 LOC: + idle cycle + claim
+|   |-- s11_autonomous.py          #  ~490 LOC: + idle cycle + auto-claim
 |   +-- s_full.py                  #  full combined reference
 |
 |-- web/                           # Interactive learning platform
 |   |-- src/agents/                #   TypeScript agent implementations
-|   |   |-- v0.ts ... v9.ts        #     run in browser, no sandbox
+|   |   |-- s01.ts ... s11.ts      #     run in browser, no sandbox
 |   |   +-- shared/                #     base class, API client, VFS
 |   |-- src/components/
 |   |   |-- inspector/             #   Live state inspector
@@ -72,36 +72,36 @@ learn-claude-code/
 
 ```
 Phase 1: THE LOOP                   Phase 2: PLANNING & KNOWLEDGE
-=================                   ==========================
-s01: Agent Loop                     s03: Structured Planning
-|  while + bash                     |  TodoManager + nag reminder
-|  "The entire agent is a loop"     |  "Make plans visible"
+=================                   ==============================
+s01: The Agent Loop                 s03: TodoWrite
+|  bash is all you need             |  plan before you act
+|  "The entire agent is a loop"     |  "Visible plans improve completion"
 |                                   |
-+-> s02: Multi-Tool Dispatch        s04: Context Isolation
-    |  dispatch map routing         |  subagent with fresh messages
++-> s02: Tools                      s04: Subagents
+    |  Read, Write, Edit, Bash      |  fresh context via Task tool
     |  "The loop didn't change"     |  "Process isolation = context isolation"
                                     |
-                                    s05: Knowledge Loading
-                                    |  SKILL.md + two-layer injection
+                                    s05: Skills
+                                    |  SKILL.md + tool_result injection
                                     |  "Load on demand, not upfront"
                                     |
-                                    s06: Context Compression
-                                       three-layer compression pipeline
+                                    s06: Compact
+                                       three-layer context compression
                                        "Strategic forgetting"
 
 Phase 3: PERSISTENCE                Phase 4: TEAMS
 =================                   =====================
-s07: File-Based Tasks               s09: Team Messaging
-|  TaskManager + dependency graph   |  TeammateManager + JSONL inboxes
-|  "State survives compression"     |  "Teammates that communicate"
+s07: Tasks                          s09: Agent Teams
+|  persistent CRUD + dependencies   |  teammates + mailboxes
+|  "State survives /compact"        |  "Append to send, drain to read"
 |                                   |
-s08: Background Execution           s10: Team Protocols
-   BackgroundManager + threads      |  shutdown + plan approval handshake
-   "Fire and forget"                |  "Same request_id, two applications"
+s08: Background Tasks               s10: Team Protocols
+   fire-and-forget threads + notify |  shutdown + plan approval
+   "Fire and forget"                |  "Same request_id, two protocols"
                                     |
-                                    s11: Autonomous Agent
-                                       idle cycle + task board polling
-                                       "The agent finds work itself"
+                                    s11: Autonomous Agents
+                                       idle cycle + auto-claim
+                                       "Poll, claim, work, repeat"
 ```
 
 ## Quick Start
@@ -145,19 +145,19 @@ npm run dev
 ## Session Comparison
 
 ```
-Session  Title                 LOC  Tools Core Addition           Key Insight
--------  --------------------  ---  ----- ---------------------   --------------------------
-s01      Agent Loop             70    1   while + bash            The entire agent is a loop
-s02      Multi-Tool Dispatch    90    4   dispatch map            The loop didn't change
-s03      Structured Planning   150    5   TodoManager + nag       Make plans visible
-s04      Context Isolation     130    5   run_subagent()          Process isolation
-s05      Knowledge Loading     150    5   SkillLoader 2-layer     Load on demand
-s06      Context Compression   180    5   3-layer compress        Strategic forgetting
-s07      File-Based Tasks      170    8   TaskManager + deps      State survives compression
-s08      Background Execution  160    6   BackgroundManager       Fire and forget
-s09      Team Messaging        340    9   Teammates + JSONL inbox Teammates that communicate
-s10      Team Protocols        390   12   shutdown + plan approval Same pattern, two domains
-s11      Autonomous Agent      490   14   idle cycle + claim      Self-organizing teams
+Session  Claude Code Feature   LOC  Tools Core Addition            Key Insight
+-------  --------------------  ---  ----- ----------------------   --------------------------
+s01      The Agent Loop         70    1   while + stop_reason      Bash is all you need
+s02      Tools                  90    4   Read/Write/Edit/Bash     The loop didn't change
+s03      TodoWrite             150    5   TodoManager + nag        Plan before you act
+s04      Subagents             130    5   Task tool + spawn        Fresh context per subagent
+s05      Skills                150    5   SKILL.md injection       Load on demand, not upfront
+s06      Compact               180    5   3-layer compression      Strategic forgetting
+s07      Tasks                 170    8   CRUD + dependency graph  State survives /compact
+s08      Background Tasks      160    6   threads + notifications  Fire and forget
+s09      Agent Teams           340   10   teammates + mailboxes   Persistent agents + async mailboxes
+s10      Team Protocols        390   12   shutdown + plan approval Same request_id, two protocols
+s11      Autonomous Agents     490   14   idle cycle + auto-claim  Poll, claim, work, repeat
 ```
 
 ## The Core Pattern
@@ -192,22 +192,22 @@ Each session adds ONE mechanism on top of this loop.
 
 ## Key Mechanisms
 
-| Mechanism            | Session | What It Does                                    |
-|----------------------|---------|-------------------------------------------------|
-| Agent loop           | s01     | `while (stop_reason == "tool_use")` loop        |
-| Tool dispatch        | s02     | Map of tool name -> handler function            |
-| Todo planning        | s03     | Create plan before execution, track completion   |
-| Context isolation    | s04     | Fresh message list per subagent                  |
-| Skill injection      | s05     | SKILL.md content injected via tool_result        |
-| Micro-compact        | s06     | Old tool results replaced with placeholders      |
-| Auto-compact         | s06     | LLM summarizes conversation when tokens > limit  |
-| Task CRUD + deps     | s07     | File-based tasks with dependency graph           |
-| Background execution | s08     | Threaded commands + notification queue           |
-| Teammate lifecycle   | s09     | Named persistent agents with config.json         |
-| File-based inbox     | s09     | JSONL messages, 5 types, per-teammate files      |
-| Shutdown protocol    | s10     | request_id based FSM for graceful shutdown       |
-| Plan approval        | s10     | Submit/review with request_id correlation        |
-| Idle cycle           | s11     | Poll board, auto-claim unclaimed tasks           |
+| Claude Code Feature | Session | What It Does                                    |
+|---------------------|---------|-------------------------------------------------|
+| Agent loop          | s01     | `while (stop_reason == "tool_use")` loop        |
+| Tools               | s02     | Map of tool name -> handler function            |
+| TodoWrite           | s03     | Create plan before execution, track completion   |
+| Subagents           | s04     | Fresh message list per subagent via Task tool    |
+| Skills              | s05     | SKILL.md content injected via tool_result        |
+| Compact (micro)     | s06     | Old tool results replaced with placeholders      |
+| Compact (auto)      | s06     | LLM summarizes conversation when tokens > limit  |
+| Tasks API           | s07     | File-based tasks with dependency graph           |
+| Background tasks    | s08     | Threaded commands + notification queue           |
+| Agent Teams         | s09     | Named persistent agents with config.json         |
+| Mailbox             | s09     | Append-only file-based messages, per-teammate     |
+| Shutdown protocol   | s10     | request_id based FSM for graceful shutdown       |
+| Plan approval       | s10     | Submit/review with request_id correlation        |
+| Idle cycle          | s11     | Poll board, auto-claim unclaimed tasks           |
 
 ## State Inspector
 
@@ -247,16 +247,16 @@ npm run build           # Full build
 Each doc follows a mental-model-first structure with ASCII diagrams:
 
 - [s01: The Agent Loop](./docs/s01-the-agent-loop.md)
-- [s02: Multi-Tool Dispatch](./docs/s02-multi-tool-dispatch.md)
-- [s03: Structured Planning](./docs/s03-structured-planning.md)
-- [s04: Context Isolation](./docs/s04-context-isolation.md)
-- [s05: Knowledge Loading](./docs/s05-knowledge-loading.md)
-- [s06: Context Compression](./docs/s06-context-compression.md)
-- [s07: File-Based Tasks](./docs/s07-file-based-tasks.md)
-- [s08: Background Execution](./docs/s08-background-execution.md)
-- [s09: Team Messaging](./docs/s09-team-messaging.md)
+- [s02: Tools](./docs/s02-multi-tool-dispatch.md)
+- [s03: TodoWrite](./docs/s03-structured-planning.md)
+- [s04: Subagents](./docs/s04-context-isolation.md)
+- [s05: Skills](./docs/s05-knowledge-loading.md)
+- [s06: Compact](./docs/s06-context-compression.md)
+- [s07: Tasks](./docs/s07-file-based-tasks.md)
+- [s08: Background Tasks](./docs/s08-background-execution.md)
+- [s09: Agent Teams](./docs/s09-team-messaging.md)
 - [s10: Team Protocols](./docs/s10-team-protocols.md)
-- [s11: Autonomous Agent](./docs/s11-autonomous-agent.md)
+- [s11: Autonomous Agents](./docs/s11-autonomous-agent.md)
 
 ## License
 

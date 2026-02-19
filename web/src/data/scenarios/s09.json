@@ -1,7 +1,7 @@
 {
   "version": "s09",
-  "title": "Team Foundation",
-  "description": "Agent creates and manages persistent teammates",
+  "title": "Team Messaging",
+  "description": "Persistent teammates communicate via JSONL inboxes",
   "steps": [
     {
       "type": "user_message",
@@ -9,31 +9,36 @@
       "annotation": "Large task requiring team collaboration"
     },
     {
-      "type": "assistant_text",
-      "content": "I'll create a team with specialized teammates for this.",
-      "annotation": "TeammateManager enables persistent multi-agent collaboration"
-    },
-    {
       "type": "tool_call",
-      "content": "create_team([\n  { name: \"frontend-dev\", role: \"React specialist\" },\n  { name: \"backend-dev\", role: \"Python API specialist\" },\n  { name: \"tester\", role: \"QA engineer\" }\n])",
+      "content": "spawn_teammate(\n  name: \"frontend-dev\",\n  role: \"React specialist\"\n)\nspawn_teammate(\n  name: \"backend-dev\",\n  role: \"Python API specialist\"\n)",
       "toolName": "teammate_manager",
-      "annotation": "TeammateManager spawns 3 persistent teammates"
+      "annotation": "Unlike subagents (s04) that die after one task, teammates persist"
     },
     {
       "type": "system_event",
-      "content": "[TeammateManager] Team created:\n  frontend-dev [idle] - React specialist\n  backend-dev [idle] - Python API specialist\n  tester [idle] - QA engineer",
-      "annotation": "Unlike subagents (v3), teammates persist across tasks"
+      "content": "[TeammateManager] Team created:\n  .team/config.json written\n  frontend-dev [idle] - own thread, own agent loop\n  backend-dev [idle] - own thread, own agent loop",
+      "annotation": "Each teammate runs its own while(tool_use) loop in a separate thread"
     },
     {
-      "type": "tool_result",
-      "content": "Team of 3 created. All teammates idle and ready for task assignment.",
-      "toolName": "teammate_manager",
-      "annotation": "Teammates have identity and state tracking"
+      "type": "tool_call",
+      "content": "send_message(\n  to: \"backend-dev\",\n  content: \"Build the user API: GET/POST /users\"\n)",
+      "toolName": "send_message",
+      "annotation": "Message appended to .team/inbox/backend-dev.jsonl"
+    },
+    {
+      "type": "system_event",
+      "content": "[backend-dev] Checking inbox... 1 new message\n  From: lead\n  Content: \"Build the user API: GET/POST /users\"\n  (inbox drained after read)",
+      "annotation": "Inbox is read-then-clear: prevents duplicate processing"
+    },
+    {
+      "type": "system_event",
+      "content": "[backend-dev -> frontend-dev] Reply via inbox:\n  \"API ready: GET /users, POST /users, GET /users/:id\"\n  Written to .team/inbox/frontend-dev.jsonl",
+      "annotation": "Teammates message each other through the same JSONL mechanism"
     },
     {
       "type": "assistant_text",
-      "content": "Team is ready. I'll assign tasks to each teammate via the task board.",
-      "annotation": "Persistent teammates vs one-shot subagents: they remember context"
+      "content": "Team is communicating via file-based inboxes. Each teammate has its own .jsonl file -- append to send, drain to read.",
+      "annotation": "JSONL inboxes decouple sender timing from receiver timing"
     }
   ]
 }

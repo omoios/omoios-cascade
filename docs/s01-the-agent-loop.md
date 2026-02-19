@@ -113,7 +113,7 @@ def agent_loop(messages: list):
         messages.append({"role": "user", "content": results})
 ```
 
-## What Changed From s00
+## What Changed
 
 This is session 1 -- the starting point. There is no prior session.
 

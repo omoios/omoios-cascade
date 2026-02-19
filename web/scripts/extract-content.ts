@@ -21,7 +21,7 @@ const OUT_DIR = path.join(WEB_DIR, "src", "data", "generated");
 // s_full.py -> s_full (reference agent, typically skipped)
 function filenameToVersionId(filename: string): string | null {
   const base = path.basename(filename, ".py");
-  if (base === "s_full") return "s_full";
+  if (base === "s_full") return null;
   if (base === "__init__") return null;
 
   const match = base.match(/^(s\d+[a-c]?)_/);
