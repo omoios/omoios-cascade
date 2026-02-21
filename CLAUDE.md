@@ -179,7 +179,7 @@ Layer 6:   End-to-end (real LLM)
 - [x] `src/harness/` package implementation (30+ source files: models, planner, worker, watchdog, cli, events, tools, git, orchestration)
 - [x] Instructor library integration (structured.py stub + pyproject.toml dependency)
 - [x] Event bus + Rich CLI renderer (events.py + rendering.py + pyproject.toml dependency)
-- [x] Python test suite (tests/python/ -- 194 tests across 18 files, layers 0-5.6)
+- [x] Python test suite (tests/python/ -- 301 tests across 33 files, layers 0-5.6)
 - [x] Layer 3.5 Structured Output test section in testing-strategy.md
 - [x] Graceful shutdown (signal handler + checkpoint + resume -- orchestration/shutdown.py)
 - [x] Coherence appendix document (docs/architecture/coherence-appendix.md)
@@ -198,6 +198,18 @@ Layer 6:   End-to-end (real LLM)
 - [x] UV workspace setup with maturin build for Rust crate
 - [x] Try-import fallback pattern (HAS_RUST flag, pure-Python fallback when Rust unavailable)
 
+- [x] Phase A: Essential tools -- grep, find_files, todo_write, ask handlers + TodoItem model
+- [x] Phase B: Agent infrastructure -- AGENTS.md loader, skill loader, hook system (config_loader/ package)
+- [x] Phase C: Background tasks + model role routing (background_task/check_background handlers, ModelConfig)
+- [x] Phase D: Browser tool + visual verification (browser_tool.py, BrowserConfig, Playwright try-import)
+- [x] Phase E: Rust acceleration expansion -- rust_grep (grep-regex/grep-searcher) + rust_glob (globset/ignore) in harness_core
+- [x] Phase F: Advanced patterns -- TTSRMixin (think-then-step-review), extension discovery, git tools (status/diff/commit/branch), web tools (http_fetch/url_extract)
+- [x] Phase G: Skill system -- SkillRegistry with keyword+description+file-pattern matching, create_skill/load_skill tools, 5 built-in skills, validation, injection points
+- [x] Phase H: Prompt engineering + freshness hardening -- self-reflection injection, identity re-injection, pivot encouragement, prompt .md files, FreshnessConfig
+- [x] Phase I: Intent specification -- TaskSpec model, validate_intent, intent templates (feature/bugfix/refactor/test/docs)
+- [x] Phase J: Production infrastructure -- ActivityLogger, CostTracker, ResourceBoundsEnforcer, MetricsCollector, PoolScaler, CircuitBreaker, graceful degradation, partial failure recovery
+- [x] 10-phase harness expansion plan fully implemented (docs/architecture/harness-expansion-plan.md)
+
 ---
 
 ## Conventions
@@ -215,9 +227,9 @@ Layer 6:   End-to-end (real LLM)
 ## Tech Stack
 
 - Python 3.10+, UV, pydantic v2, pydantic-settings, anthropic SDK, instructor (planned)
-- Rust (PyO3 0.28, maturin, walkdir, rayon, md-5) -- optional acceleration
+- Rust (PyO3 0.28, maturin, walkdir, rayon, md-5, grep-regex, grep-searcher, globset, ignore) -- optional acceleration
 - TypeScript, Next.js, Vitest
-- Rich (planned, for CLI output)
+- Rich (CLI output + metrics dashboard)
 - Git (real git operations for workspace isolation and merge)
 
 ---
