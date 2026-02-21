@@ -90,6 +90,32 @@ class RichRenderer:
 
         self.console.print(Panel(table, title="Harness Workers"))
 
+    def render_metrics_panel(self, metrics: dict) -> None:
+        table = Table(title="Metrics")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+
+        ordered_keys = [
+            "tasks_completed",
+            "tasks_failed",
+            "tasks_pending",
+            "workers_active",
+            "workers_idle",
+            "workers_terminated",
+            "tokens_total",
+            "tokens_per_minute",
+            "error_rate",
+            "merge_success_rate",
+            "average_task_duration",
+            "cost_total",
+        ]
+
+        for key in ordered_keys:
+            if key in metrics:
+                table.add_row(key, str(metrics[key]))
+
+        self.console.print(Panel(table, title="Harness Metrics"))
+
     @property
     def event_log(self) -> list[str]:
         return self._event_log

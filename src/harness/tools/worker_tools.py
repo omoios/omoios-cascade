@@ -5,6 +5,17 @@ from typing import Any
 
 from harness.models.todo import TodoItem
 
+try:
+    import harness_core as _harness_core
+
+    _rust_grep = getattr(_harness_core, "rust_grep", None)
+    _rust_glob = getattr(_harness_core, "rust_glob", None)
+    HAS_RUST_GREP = callable(_rust_grep) and callable(_rust_glob)
+except ImportError:
+    _rust_grep = None
+    _rust_glob = None
+    HAS_RUST_GREP = False
+
 _background_tasks: dict[str, asyncio.Task] = {}
 _background_results: dict[str, dict] = {}
 
@@ -136,6 +147,35 @@ async def grep_handler(
     if not os.path.exists(search_real):
         return {"error": f"Path not found: {path}"}
 
+    if HAS_RUST_GREP and context_lines == 0:
+        try:
+            raw_matches = await asyncio.to_thread(_rust_grep, search_real, pattern, include, 10000)
+        except Exception as exc:
+            return {"error": str(exc)}
+
+        matches: list[dict[str, Any]] = []
+        search_base = search_real if os.path.isdir(search_real) else os.path.dirname(search_real)
+        for file_path, line_num, content in raw_matches:
+            full_file_path = file_path if os.path.isabs(file_path) else os.path.join(search_base, file_path)
+            matches.append(
+                {
+                    "file": os.path.relpath(full_file_path, workspace_real),
+                    "line": int(line_num),
+                    "content": content,
+                }
+            )
+
+        total = len(matches)
+        truncated = total > 100
+        result: dict[str, Any] = {
+            "matches": matches[:100],
+            "total": total,
+            "truncated": truncated,
+        }
+        if truncated:
+            result["notice"] = "Output truncated to 100 matches"
+        return result
+
     cmd = ["grep", "-rn"]
     if include:
         cmd.append(f"--include={include}")
@@ -190,6 +230,19 @@ async def find_files_handler(
     max_results: int = 100,
 ) -> dict[str, Any]:
     workspace = Path(workspace_path)
+
+    if HAS_RUST_GREP:
+        try:
+            files = await asyncio.to_thread(_rust_glob, str(workspace), pattern, 10000)
+        except Exception as exc:
+            return {"error": str(exc)}
+        total = len(files)
+        truncated = total > max_results
+        return {
+            "files": files[:max_results],
+            "total": total,
+            "truncated": truncated,
+        }
 
     def _glob() -> list[str]:
         matches = [str(path.relative_to(workspace)) for path in workspace.glob(pattern) if path.is_file()]

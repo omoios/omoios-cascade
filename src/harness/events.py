@@ -73,9 +73,81 @@ class IdentityReinjected(HarnessEvent):
     event_type: str = "identity_reinjected"
 
 
+class TTSRFired(HarnessEvent):
+    event_type: str = "ttsr_fired"
+
+
+class ExtensionsDiscovered(HarnessEvent):
+    extensions: list[str] = Field(default_factory=list)
+    event_type: str = "extensions_discovered"
+
+
 class IntentValidationWarning(HarnessEvent):
     warnings: list[str] = Field(default_factory=list)
     event_type: str = "intent_validation_warning"
+
+
+class SkillCreated(HarnessEvent):
+    skill_name: str = ""
+    path: str = ""
+    event_type: str = "skill_created"
+
+
+class SkillValidationError(HarnessEvent):
+    skill_name: str = ""
+    errors: list[str] = Field(default_factory=list)
+    event_type: str = "skill_validation_error"
+
+
+class SkillInjected(HarnessEvent):
+    skill_name: str = ""
+    task_id: str = ""
+    event_type: str = "skill_injected"
+
+
+class CostUpdate(HarnessEvent):
+    task_id: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    event_type: str = "cost_update"
+
+
+class ResourceBoundExceeded(HarnessEvent):
+    violations: list[str] = Field(default_factory=list)
+    event_type: str = "resource_bound_exceeded"
+
+
+class PoolScaleUp(HarnessEvent):
+    target_count: int = 0
+    event_type: str = "pool_scale_up"
+
+
+class PoolScaleDown(HarnessEvent):
+    target_count: int = 0
+    event_type: str = "pool_scale_down"
+
+
+class CircuitBreakerOpen(HarnessEvent):
+    event_type: str = "circuit_breaker_open"
+
+
+class CircuitBreakerClosed(HarnessEvent):
+    event_type: str = "circuit_breaker_closed"
+
+
+class DegradationWarning(HarnessEvent):
+    memory_percent: float = 0.0
+    cpu_percent: float = 0.0
+    event_type: str = "degradation_warning"
+
+
+class DegradationCritical(HarnessEvent):
+    memory_percent: float = 0.0
+    cpu_percent: float = 0.0
+    event_type: str = "degradation_critical"
 
 
 class EventBus:

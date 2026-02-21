@@ -3,11 +3,12 @@ import json
 import time
 from typing import Any, Callable
 
+from harness.agents.ttsr import TTSRMixin
 from harness.events import EventBus, IdentityReinjected, PivotEncouraged, SelfReflectionInjected
 from harness.models.agent import AgentConfig
 
 
-class BaseAgent:
+class BaseAgent(TTSRMixin):
     COMPRESSION_THRESHOLD = 100000
 
     def __init__(
@@ -35,6 +36,11 @@ class BaseAgent:
         self._consecutive_failures: dict[str, int] = {}
         self._pivot_threshold: int = 3
         self._hard_stop_threshold: int = 5
+        self.activity_logger = None
+        self._agents_md: str = ""
+        self._skill_content: str = ""
+        self._injected_skills: set[str] = set()
+        self._init_ttsr_state()
 
     async def run(self, initial_message: str = "") -> str:
         self._start_time = time.time()
@@ -68,6 +74,14 @@ class BaseAgent:
             for block in response.content:
                 if getattr(block, "type", None) != "tool_use":
                     continue
+                if self.activity_logger:
+                    await self.activity_logger.log(
+                        self.config.agent_id,
+                        "tool_use",
+                        tool=block.name,
+                        metrics={"turn_count": self.turn_count, "total_tokens": self.total_tokens},
+                        tool_use_id=block.id,
+                    )
                 handler = self.tool_handlers.get(block.name)
                 if handler:
                     result = handler(**block.input)
@@ -76,6 +90,15 @@ class BaseAgent:
                 else:
                     result = {"error": f"Unknown tool: {block.name}"}
                 hook_results.append({"tool_name": block.name, "tool_use_id": block.id, "result": result})
+                if self.activity_logger:
+                    await self.activity_logger.log(
+                        self.config.agent_id,
+                        "tool_result",
+                        tool=block.name,
+                        metrics={"turn_count": self.turn_count, "total_tokens": self.total_tokens},
+                        tool_use_id=block.id,
+                        success=not (isinstance(result, dict) and "error" in result),
+                    )
                 content = json.dumps(result) if isinstance(result, dict) else str(result)
                 tool_results.append(
                     {
@@ -97,18 +120,29 @@ class BaseAgent:
         return last_text
 
     async def _call_llm(self):
+        system_prompt = self.system_prompt
+        if self._agents_md:
+            system_prompt = f"{system_prompt}\n\n# AGENTS.md\n{self._agents_md}".strip()
+        if self._skill_content:
+            system_prompt = f"{system_prompt}\n\n# Skills\n{self._skill_content}".strip()
+        ttsr_prompt = self._ttsr_consume_system_messages()
+        if ttsr_prompt:
+            system_prompt = f"{system_prompt}\n\n{ttsr_prompt}".strip()
+
         kwargs: dict[str, Any] = {
             "model": "claude-sonnet-4-20250514",
             "max_tokens": 8192,
             "messages": self.messages,
         }
-        if self.system_prompt:
-            kwargs["system"] = self.system_prompt
+        if system_prompt:
+            kwargs["system"] = system_prompt
         if self.tool_schemas:
             kwargs["tools"] = self.tool_schemas
         return await self.client.messages.create(**kwargs)
 
     async def on_before_llm_call(self) -> None:
+        await self._ttsr_before_llm_call()
+
         from harness.orchestration.compression import estimate_tokens, microcompact
 
         current_tokens = estimate_tokens(self.messages)
@@ -139,6 +173,8 @@ class BaseAgent:
                 )
 
     async def on_tool_result(self, results: list[dict]) -> None:
+        await self._ttsr_on_tool_result(results)
+
         for result in results:
             tool_name = result.get("tool_name", "")
             tool_result = result.get("result", {})

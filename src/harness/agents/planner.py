@@ -50,6 +50,7 @@ class RootPlanner(BaseAgent):
         self.max_wall_time_seconds = max_wall_time_seconds
         self._spawned_workers: list[str] = []
         self._reviewed_handoffs: list[str] = []
+        self._requested_worker_skills: dict[str, list[str]] = {}
 
     async def run(self, initial_message: str = "") -> str:
         self._start_time = time.time()
@@ -93,7 +94,14 @@ class RootPlanner(BaseAgent):
                         result = await result
                 else:
                     result = {"error": f"Unknown tool: {block.name}"}
-                hook_results.append({"tool_name": block.name, "tool_use_id": block.id, "result": result})
+                hook_results.append(
+                    {
+                        "tool_name": block.name,
+                        "tool_use_id": block.id,
+                        "tool_input": dict(block.input),
+                        "result": result,
+                    }
+                )
                 content = json.dumps(result) if isinstance(result, dict) else str(result)
                 tool_results.append(
                     {
@@ -124,6 +132,17 @@ class RootPlanner(BaseAgent):
                         "error": f"Planner cannot use tool: {tool_name}",
                     }
                 )
+                continue
+
+            if tool_name == "spawn_worker":
+                tool_input = result.get("tool_input", {})
+                task_id = str(tool_input.get("task_id", "")).strip()
+                skills = tool_input.get("skills", [])
+                if task_id and isinstance(skills, list):
+                    self._requested_worker_skills[task_id] = [
+                        str(skill).strip() for skill in skills if str(skill).strip()
+                    ]
+        await super().on_tool_result(results)
 
     def can_spawn_worker(self, task_id: str) -> bool:
         if self.idempotency_guard:
@@ -167,6 +186,47 @@ class RootPlanner(BaseAgent):
 
         return False
 
+    def _handle_sub_planner_failure(
+        self,
+        sub_planner_id: str,
+        completed_handoffs: list[dict] | None,
+        remaining_tasks: list[str] | None,
+    ) -> dict:
+        merged_handoffs = completed_handoffs or []
+        pending_tasks = remaining_tasks or []
+        recovery_task_id = f"recovery-{sub_planner_id}-{int(time.time())}"
+        recovery_task = {
+            "task_id": recovery_task_id,
+            "description": (
+                f"Recover failed sub-planner {sub_planner_id}. "
+                f"Completed handoffs: {len(merged_handoffs)}. "
+                f"Remaining tasks: {', '.join(pending_tasks) if pending_tasks else 'none'}."
+            ),
+            "metadata": {
+                "source_sub_planner": sub_planner_id,
+                "completed_handoffs": merged_handoffs,
+                "remaining_tasks": pending_tasks,
+            },
+        }
+
+        self.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "[SUB-PLANNER FAILURE RECOVERY] "
+                    f"Merged {len(merged_handoffs)} completed handoffs from {sub_planner_id}. "
+                    f"Created recovery task {recovery_task_id} for remaining scope."
+                ),
+            }
+        )
+
+        return {
+            "status": "recovered",
+            "sub_planner_id": sub_planner_id,
+            "merged_handoffs": merged_handoffs,
+            "recovery_task": recovery_task,
+        }
+
 
 class SubPlanner(BaseAgent):
     def __init__(
@@ -203,3 +263,4 @@ class SubPlanner(BaseAgent):
                         "error": f"Planner cannot use tool: {tool_name}",
                     }
                 )
+        await super().on_tool_result(results)

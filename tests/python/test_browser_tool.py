@@ -1,6 +1,6 @@
 import pytest
 
-from harness.tools.browser_tool import BrowserSession, HAS_PLAYWRIGHT, browser_handler, visual_verify_handler
+from harness.tools.browser_tool import HAS_PLAYWRIGHT, BrowserSession, browser_handler, visual_verify_handler
 
 
 @pytest.mark.asyncio

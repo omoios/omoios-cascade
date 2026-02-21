@@ -1,5 +1,10 @@
+from typing import Any
+
 from harness.tools.browser_tool import browser_handler, visual_verify_handler
+from harness.tools.git_tools import git_branch_handler, git_commit_handler, git_diff_handler, git_status_handler
 from harness.tools.registry import ToolRegistry
+from harness.tools.skill_tools import create_skill_handler, load_skill_handler
+from harness.tools.web_tools import http_fetch_handler, url_extract_handler
 from harness.tools.worker_tools import (
     ask_handler,
     background_task_handler,
@@ -61,6 +66,14 @@ def list_agents_handler(**kwargs) -> dict:
 
 def get_error_budget_handler(**kwargs) -> dict:
     return {"status": "ok", "zone": "healthy"}
+
+
+async def create_skill_tool_handler(workspace_path: str = ".", **kwargs: Any) -> dict:
+    return await create_skill_handler(kwargs, workspace_path=workspace_path)
+
+
+async def load_skill_tool_handler(workspace_path: str = ".", **kwargs: Any) -> dict:
+    return await load_skill_handler(kwargs, workspace_path=workspace_path)
 
 
 WORKER_TOOL_SPECS = [
@@ -242,6 +255,36 @@ WORKER_TOOL_SPECS = [
         "handler": check_background_handler,
     },
     {
+        "name": "create_skill",
+        "description": "Create a new SKILL.md in project-level .omp skills.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "content": {"type": "string"},
+                "triggers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["name", "description", "content"],
+        },
+        "handler": create_skill_tool_handler,
+    },
+    {
+        "name": "load_skill",
+        "description": "Load a skill by name and return its content.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+        "handler": load_skill_tool_handler,
+    },
+    {
         "name": "browser",
         "description": "Automate a headless browser: navigate, screenshot, click, type, evaluate JS, get text.",
         "input_schema": {
@@ -281,6 +324,79 @@ WORKER_TOOL_SPECS = [
         },
         "handler": visual_verify_handler,
     },
+    {
+        "name": "git_status",
+        "description": "Run git status --porcelain in workspace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        "handler": git_status_handler,
+    },
+    {
+        "name": "git_diff",
+        "description": "Run git diff in workspace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "staged": {"type": "boolean", "description": "Use --staged"},
+            },
+            "required": [],
+        },
+        "handler": git_diff_handler,
+    },
+    {
+        "name": "git_commit",
+        "description": "Stage all changes and commit with a message.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Commit message"},
+            },
+            "required": ["message"],
+        },
+        "handler": git_commit_handler,
+    },
+    {
+        "name": "git_branch",
+        "description": "List branches or create and checkout a new branch.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "create": {"type": "boolean", "description": "Create a new branch"},
+                "name": {"type": "string", "description": "Branch name when create=true"},
+            },
+            "required": [],
+        },
+        "handler": git_branch_handler,
+    },
+    {
+        "name": "http_fetch",
+        "description": "Fetch URL content over HTTP.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds"},
+            },
+            "required": ["url"],
+        },
+        "handler": http_fetch_handler,
+    },
+    {
+        "name": "url_extract",
+        "description": "Fetch URL and extract text content.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds"},
+            },
+            "required": ["url"],
+        },
+        "handler": url_extract_handler,
+    },
 ]
 
 
@@ -293,6 +409,10 @@ PLANNER_TOOL_SCHEMAS: list[dict] = [
             "properties": {
                 "task_id": {"type": "string"},
                 "task": {"type": "string"},
+                "skills": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
             },
             "required": ["task_id"],
         },

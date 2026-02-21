@@ -10,8 +10,15 @@ from harness.agents.planner import RootPlanner, SubPlanner
 from harness.agents.watchdog import Watchdog
 from harness.agents.worker import Worker
 from harness.config import HarnessConfig
-from harness.config_loader import HookRegistry, SkillLoader, discover_skills, load_agents_md
-from harness.events import EventBus, WorkerSpawned
+from harness.config_loader import (
+    HookRegistry,
+    SkillLoader,
+    SkillRegistry,
+    discover_extensions,
+    discover_skills,
+    load_agents_md,
+)
+from harness.events import EventBus, SkillInjected, WorkerSpawned
 from harness.models.agent import AgentConfig, AgentRole
 from harness.models.error_budget import ErrorBudget
 from harness.models.task import Task, TaskStatus
@@ -20,6 +27,9 @@ from harness.orchestration.scratchpad import Scratchpad
 from harness.orchestration.shutdown import ShutdownHandler
 from harness.rendering import RichRenderer
 from harness.tools.browser_tool import browser_handler, visual_verify_handler
+from harness.tools.git_tools import git_branch_handler, git_commit_handler, git_diff_handler, git_status_handler
+from harness.tools.skill_tools import create_skill_handler, load_skill_handler
+from harness.tools.web_tools import http_fetch_handler, url_extract_handler
 from harness.tools.worker_tools import (
     ask_handler,
     background_task_handler,
@@ -252,6 +262,34 @@ WORKER_TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "create_skill",
+        "description": "Create a new SKILL.md in project-level .omp skills.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "content": {"type": "string"},
+                "triggers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["name", "description", "content"],
+        },
+    },
+    {
+        "name": "load_skill",
+        "description": "Load a skill by name and return its content.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
         "name": "browser",
         "description": "Automate a headless browser: navigate, screenshot, click, type, evaluate JS, get text.",
         "input_schema": {
@@ -260,8 +298,7 @@ WORKER_TOOL_SCHEMAS = [
                 "action": {
                     "type": "string",
                     "description": (
-                        "Action: navigate, screenshot, click, type, evaluate, "
-                        "get_text, accessibility_snapshot, close"
+                        "Action: navigate, screenshot, click, type, evaluate, get_text, accessibility_snapshot, close"
                     ),
                 },
                 "url": {"type": "string", "description": "URL for navigate action"},
@@ -288,6 +325,73 @@ WORKER_TOOL_SCHEMAS = [
                 "session_id": {"type": "string", "description": "Browser session ID"},
             },
             "required": ["url", "expected"],
+        },
+    },
+    {
+        "name": "git_status",
+        "description": "Run git status --porcelain in workspace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "git_diff",
+        "description": "Run git diff in workspace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "staged": {"type": "boolean", "description": "Use --staged"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "git_commit",
+        "description": "Stage all changes and commit with a message.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Commit message"},
+            },
+            "required": ["message"],
+        },
+    },
+    {
+        "name": "git_branch",
+        "description": "List branches or create and checkout a new branch.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "create": {"type": "boolean", "description": "Create a new branch"},
+                "name": {"type": "string", "description": "Branch name when create=true"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "http_fetch",
+        "description": "Fetch URL content over HTTP.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "url_extract",
+        "description": "Fetch URL and extract text content.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds"},
+            },
+            "required": ["url"],
         },
     },
 ]
@@ -318,6 +422,11 @@ PLANNER_TOOL_SCHEMAS = [
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to assign"},
                 "task": {"type": "string", "description": "Instructions for the worker"},
+                "skills": {
+                    "type": "array",
+                    "description": "Optional skill names to inject into the worker",
+                    "items": {"type": "string"},
+                },
             },
             "required": ["task_id", "task"],
         },
@@ -450,8 +559,18 @@ class HarnessRunner:
         self._base_snapshots: dict[str, dict[str, str]] = {}
         self._prompt_texts = self._load_prompts()
         self._agents_md_content: str = ""
+        self._discovered_extensions: list[Any] = []
         self._skill_loader: SkillLoader = SkillLoader()
+        self._skill_registry: SkillRegistry = SkillRegistry()
         self._hook_registry: HookRegistry = HookRegistry()
+
+    def _active_worker_tool_schemas(self) -> list[dict]:
+        schemas = list(WORKER_TOOL_SCHEMAS)
+        if not self.config.git_tools.enabled:
+            schemas = [s for s in schemas if s["name"] not in {"git_status", "git_diff", "git_commit", "git_branch"}]
+        if not self.config.web_tools.enabled:
+            schemas = [s for s in schemas if s["name"] not in {"http_fetch", "url_extract"}]
+        return schemas
 
     def _load_prompt_file(self, filename: str, fallback: str) -> str:
         prompt_path = Path(__file__).resolve().parent / "prompts" / filename
@@ -522,7 +641,7 @@ class HarnessRunner:
         self._tasks[task_id] = task
         return {"status": "created", "task_id": task_id, "description": description}
 
-    async def _handle_spawn_worker(self, task_id: str, task: str = "") -> dict:
+    async def _handle_spawn_worker(self, task_id: str, task: str = "", skills: list[str] | None = None) -> dict:
         if task_id in self._workers:
             return {"error": f"Worker already spawned for task: {task_id}"}
 
@@ -549,15 +668,31 @@ class HarnessRunner:
         )
 
         workspace_root = self.config.workspace.root_dir
-        worker_tool_handlers = self._make_worker_tool_handlers(workspace_root, worker_id)
-
         task_desc = task or (stored_task.description if stored_task else task_id)
+
+        requested_skills: list = skills or []
+        named_skills = [
+            skill
+            for skill_name in requested_skills
+            if (skill := self._skill_registry.get_skill(str(skill_name).strip())) is not None
+        ]
+        auto_skills = self._skill_registry.match_task(task_desc)
+        selected_skills: list = []
+        selected_names: set[str] = set()
+        for skill in [*named_skills, *auto_skills]:
+            if skill.name in selected_names:
+                continue
+            selected_names.add(skill.name)
+            selected_skills.append(skill)
+
+        injected_skills = set(selected_names)
+        worker_tool_handlers = self._make_worker_tool_handlers(workspace_root, worker_id, injected_skills)
 
         worker = Worker(
             client=client,
             config=worker_config,
             tool_handlers=worker_tool_handlers,
-            tool_schemas=WORKER_TOOL_SCHEMAS,
+            tool_schemas=self._active_worker_tool_schemas(),
             event_bus=self.event_bus,
             system_prompt=(f"{self._prompt_texts['worker']}\n\nTask: {task_desc}"),
             workspace_root=workspace_root,
@@ -573,10 +708,19 @@ class HarnessRunner:
         if self._agents_md_content:
             worker._agents_md = self._agents_md_content
 
-        matched_skills = self._skill_loader.match_task(task_desc)
-        if matched_skills:
-            skill_content = "\n\n".join(f"# Skill: {s.name}\n{s.content}" for s in matched_skills)
+        if selected_skills:
+            skill_content = "\n\n".join(f"## {s.name}\n{s.content}" for s in selected_skills)
             worker._skill_content = skill_content
+            worker._injected_skills.update(selected_names)
+            for skill in selected_skills:
+                await self.event_bus.emit(
+                    SkillInjected(
+                        agent_id=worker_id,
+                        task_id=task_id,
+                        skill_name=skill.name,
+                        details={"task_id": task_id, "skill_name": skill.name},
+                    )
+                )
 
         await self._hook_registry.fire("worker_spawn", worker_id=worker_id, task=task_desc)
 
@@ -758,7 +902,23 @@ class HarnessRunner:
             "threshold": self.error_budget.budget_percentage,
         }
 
-    def _make_worker_tool_handlers(self, workspace_root: str, worker_id: str) -> dict:
+    async def _create_skill_tool(self, workspace_path: str, **kwargs: Any) -> dict[str, Any]:
+        return await create_skill_handler(kwargs, workspace_path=workspace_path, event_bus=self.event_bus)
+
+    async def _load_skill_tool(
+        self,
+        workspace_path: str,
+        loaded_skills: set[str],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        return await load_skill_handler(
+            kwargs,
+            workspace_path=workspace_path,
+            loaded_skills=loaded_skills,
+            registry=self._skill_registry,
+        )
+
+    def _make_worker_tool_handlers(self, workspace_root: str, worker_id: str, loaded_skills: set[str]) -> dict:
         workspace_path = f"{workspace_root}/{worker_id}"
         handlers = {
             "bash": partial(bash_handler, workspace_path=workspace_path),
@@ -771,14 +931,25 @@ class HarnessRunner:
             "ask": partial(ask_handler, workspace_path=workspace_path),
             "background_task": partial(background_task_handler, workspace_path=workspace_path),
             "check_background": partial(check_background_handler, workspace_path=workspace_path),
+            "create_skill": partial(self._create_skill_tool, workspace_path=workspace_path),
+            "load_skill": partial(self._load_skill_tool, workspace_path=workspace_path, loaded_skills=loaded_skills),
             "submit_handoff": submit_handoff_handler,
         }
         if self.config.browser.enabled:
             handlers["browser"] = partial(browser_handler, workspace_path=workspace_path)
             handlers["visual_verify"] = partial(visual_verify_handler, workspace_path=workspace_path)
+        if self.config.git_tools.enabled:
+            handlers["git_status"] = partial(git_status_handler, workspace_path=workspace_path)
+            handlers["git_diff"] = partial(git_diff_handler, workspace_path=workspace_path)
+            handlers["git_commit"] = partial(git_commit_handler, workspace_path=workspace_path)
+            handlers["git_branch"] = partial(git_branch_handler, workspace_path=workspace_path)
+        if self.config.web_tools.enabled:
+            handlers["http_fetch"] = partial(http_fetch_handler, workspace_path=workspace_path)
+            handlers["url_extract"] = partial(url_extract_handler, workspace_path=workspace_path)
         return handlers
 
     def _make_fixer_tool_handlers(self, repo: str) -> dict:
+        loaded_skills: set[str] = set()
         handlers = {
             "bash": partial(bash_handler, workspace_path=repo),
             "read_file": partial(read_file_handler, workspace_path=repo),
@@ -790,11 +961,21 @@ class HarnessRunner:
             "ask": partial(ask_handler, workspace_path=repo),
             "background_task": partial(background_task_handler, workspace_path=repo),
             "check_background": partial(check_background_handler, workspace_path=repo),
+            "create_skill": partial(self._create_skill_tool, workspace_path=repo),
+            "load_skill": partial(self._load_skill_tool, workspace_path=repo, loaded_skills=loaded_skills),
             "submit_handoff": submit_handoff_handler,
         }
         if self.config.browser.enabled:
             handlers["browser"] = partial(browser_handler, workspace_path=repo)
             handlers["visual_verify"] = partial(visual_verify_handler, workspace_path=repo)
+        if self.config.git_tools.enabled:
+            handlers["git_status"] = partial(git_status_handler, workspace_path=repo)
+            handlers["git_diff"] = partial(git_diff_handler, workspace_path=repo)
+            handlers["git_commit"] = partial(git_commit_handler, workspace_path=repo)
+            handlers["git_branch"] = partial(git_branch_handler, workspace_path=repo)
+        if self.config.web_tools.enabled:
+            handlers["http_fetch"] = partial(http_fetch_handler, workspace_path=repo)
+            handlers["url_extract"] = partial(url_extract_handler, workspace_path=repo)
         return handlers
 
     def _build_planner_handlers(self) -> dict[str, Any]:
@@ -837,7 +1018,7 @@ class HarnessRunner:
                 client=client,
                 config=fixer_config,
                 tool_handlers=tool_handlers,
-                tool_schemas=WORKER_TOOL_SCHEMAS,
+                tool_schemas=self._active_worker_tool_schemas(),
                 event_bus=self.event_bus,
                 system_prompt=(
                     f"You are a fixer agent. The test command failed with these errors:\n"
@@ -879,8 +1060,10 @@ class HarnessRunner:
 
         workspace_root = self.config.workspace.canonical_dir
         self._agents_md_content = load_agents_md(workspace_root)
-        skills = discover_skills(workspace_root)
-        self._skill_loader = SkillLoader(skills)
+        self._discovered_extensions = await discover_extensions(workspace_root, event_bus=self.event_bus)
+        skills = discover_skills(workspace_root, event_bus=self.event_bus, include_builtin=True)
+        self._skill_registry = SkillRegistry(skills=skills, workspace_root=workspace_root, event_bus=self.event_bus)
+        self._skill_loader = SkillLoader(skills=skills, workspace_root=workspace_root, event_bus=self.event_bus)
         await self._hook_registry.fire("session_start")
 
         planner_model = self._get_model_for_role("root_planner")
