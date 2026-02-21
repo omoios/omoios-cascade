@@ -68,6 +68,7 @@ export interface TodoItem {
 }
 
 export interface TaskItem {
+  labels?: string[];
   id: string;
   subject: string;
   status: "pending" | "in_progress" | "completed";

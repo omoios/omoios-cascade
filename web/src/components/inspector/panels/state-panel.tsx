@@ -163,16 +163,30 @@ export function StatePanel({ state, version }: StatePanelProps) {
           ) : (
             <div className="flex flex-col gap-1">
               {state.tasks.map((task) => (
-                <div key={task.id} className="flex items-center gap-2 text-[11px]">
-                  <span
-                    className={cn(
-                      "h-2 w-2 shrink-0 rounded-full",
-                      task.status === "completed" ? "bg-emerald-500" :
-                      task.status === "in_progress" ? "bg-blue-500" : "bg-zinc-300"
-                    )}
-                  />
-                  <span className="flex-1 truncate font-mono">{task.subject}</span>
-                  <span className="shrink-0 text-[10px] text-zinc-500">{task.status}</span>
+                <div key={task.id} className="flex flex-col gap-0.5 rounded border border-[var(--color-border)] p-1.5">
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <span
+                      className={cn(
+                        "h-2 w-2 shrink-0 rounded-full",
+                        task.status === "completed" ? "bg-emerald-500" :
+                        task.status === "in_progress" ? "bg-blue-500" : "bg-zinc-300"
+                      )}
+                    />
+                    <span className="flex-1 truncate font-mono">{task.subject}</span>
+                    <span className="shrink-0 text-[10px] text-zinc-500">{task.status}</span>
+                  </div>
+                  {task.labels && task.labels.length > 0 && (
+                    <div className="flex flex-wrap gap-1 pl-3.5">
+                      {task.labels.map((label) => (
+                        <span
+                          key={label}
+                          className="rounded bg-blue-100 px-1.5 py-0.5 text-[9px] font-medium text-blue-700 dark:bg-blue-900 dark:text-blue-300"
+                        >
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

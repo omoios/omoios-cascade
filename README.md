@@ -102,6 +102,44 @@ s08: Background Tasks               s10: Team Protocols
                                     s11: Autonomous Agents
                                        idle cycle + auto-claim
                                        "Poll, claim, work, repeat"
+
+Phase 5: THE HARNESS
+====================
+s12: Structured Handoffs
+|  diff + narrative + status + metrics
+|  "Show your work, not just results"
+|
+s13: Scratchpad Rewriting
+|  REWRITE not append, auto-summarize
+|  "Fresh context, always current"
+|
+s14: Planner-Worker Split
+|  planners delegate, workers execute
+|  "Think and do are separate roles"
+|
+s15: Worker Isolation
+|  per-worker workspace copies
+|  "Your mess, your sandbox"
+|
+s16: Optimistic Merge
+|  3-way merge + fix-forward
+|  "Conflicts are tasks, not blockers"
+|
+s17: Recursive Hierarchy
+|  root → sub-planners → workers
+|  "Fractals all the way down"
+|
+s18: Error Tolerance
+|  error budgets, errors-as-tasks
+|  "Accept imperfection, fix forward"
+|
+s19: Failure Modes & Recovery
+|  watchdog: zombie/tunnel-vision/burn
+|  "Detect and restart, don't debug"
+|
+s20: Reconciliation Pass
+   green branch + fixer loop
+   "One final sweep to green"
 ```
 
 ## Quick Start
@@ -158,6 +196,15 @@ s08      Background Tasks      160    6   threads + notifications  Fire and forg
 s09      Agent Teams           340   10   teammates + mailboxes   Persistent agents + async mailboxes
 s10      Team Protocols        390   12   shutdown + plan approval Same request_id, two protocols
 s11      Autonomous Agents     490   14   idle cycle + auto-claim  Poll, claim, work, repeat
+s12      Structured Handoffs   751   15   review_handoff           Show your work, not just results
+s13      Scratchpad Rewriting 1110   17   scratchpad read/write   Fresh context, always current
+s14      Planner-Worker Split  998   18   delegate + execute       Think and do are separate roles
+s15      Worker Isolation     1119   16   per-worker workspaces    Your mess, your sandbox
+s16      Optimistic Merge     1464   17   3-way merge + fix       Conflicts are tasks, not blockers
+s17      Recursive Hierarchy  1303   18   sub-planners            Fractals all the way down
+s18      Error Tolerance      882   17   error budgets            Accept imperfection, fix forward
+s19      Failure Modes        1648   18   watchdog patterns       Detect and restart, don't debug
+s20      Reconciliation Pass  935   16   fixer loop              One final sweep to green
 ```
 
 ## The Core Pattern
@@ -208,6 +255,15 @@ Each session adds ONE mechanism on top of this loop.
 | Shutdown protocol   | s10     | request_id based FSM for graceful shutdown       |
 | Plan approval       | s10     | Submit/review with request_id correlation        |
 | Idle cycle          | s11     | Poll board, auto-claim unclaimed tasks           |
+| Structured handoff | s12     | Diff + narrative + status + metrics submission   |
+| Scratchpad         | s13     | Rewrite, not append, auto-summarize context      |
+| Planner role       | s14     | Delegate tasks, don't execute them               |
+| Worker isolation   | s15     | Per-worker workspace copies in /tmp             |
+| Optimistic merge   | s16     | 3-way merge with fix-forward on conflict         |
+| Sub-planners       | s17     | Root → sub-planners → workers hierarchy         |
+| Error budget       | s18     | Track error counts, fail gracefully             |
+| Watchdog           | s19     | Detect zombie/tunnel-vision/burn, restart      |
+| Reconciliation     | s20     | Green branch check + fixer loop                |
 
 ## State Inspector
 

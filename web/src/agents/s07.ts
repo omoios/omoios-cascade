@@ -1,7 +1,7 @@
 /**
- * s07 - File-Based Tasks
+ * s07 - File-Based Tasks with Labels
  *
- * TaskManager with CRUD tools + dependency graph, persisted as JSON files.
+ * TaskManager with CRUD tools + dependency graph + labels, persisted as JSON files.
  * State survives compression because it lives outside the conversation.
  *
  *   Task lifecycle:        Dependency graph:
@@ -13,18 +13,22 @@
  *     v                    Storage:
  *   completed                .tasks/<id>.json in VirtualFS
  *
- *   4 CRUD tools:
+ *   Labels: string array for categorization/filtering
  *   +---------------------------------------------+
  *   | task_create  - create with subject + desc    |
  *   | task_update  - change status or blockedBy    |
  *   | task_list    - show all with deps            |
- *   | task_get     - full details by ID            |
+ *   | task_get     - full details by ID           |
+ *   | task_add_label    - add label to task       |
+ *   | task_remove_label - remove label from task   |
+ *   | task_list_by_label - filter tasks by label  |
  *   +---------------------------------------------+
  *
- * Mechanism: TaskManager CRUD + deps + file persistence
+ * Mechanism: TaskManager CRUD + deps + file persistence + labels
  * Tools: bash, read_file, write_file, edit_file, task_create,
- *        task_update, task_list, task_get (8 total)
- * LOC target: 170
+ *        task_update, task_list, task_get, task_add_label,
+ *        task_remove_label, task_list_by_label (11 total)
+ * LOC target: 220
  */
 
 import {
@@ -40,15 +44,23 @@ interface TaskData {
   description: string;
   status: "pending" | "in_progress" | "completed";
   blockedBy: string[];
+  labels: string[];
 }
 
 class TaskManager {
   private counter = 1;
   constructor(private fs: VirtualFS) {}
 
-  create(subject: string, description: string): TaskData {
+  create(subject: string, description: string, labels?: string[]): TaskData {
     const id = String(this.counter++);
-    const task: TaskData = { id, subject, description, status: "pending", blockedBy: [] };
+    const task: TaskData = { 
+      id, 
+      subject, 
+      description, 
+      status: "pending", 
+      blockedBy: [],
+      labels: labels || [],
+    };
     this.fs.writeFile(`.tasks/${id}.json`, JSON.stringify(task, null, 2));
     return task;
   }
@@ -59,12 +71,31 @@ class TaskManager {
     try { return JSON.parse(raw); } catch { return null; }
   }
 
-  update(id: string, fields: Partial<Pick<TaskData, "status" | "blockedBy">>): TaskData | null {
+  update(id: string, fields: Partial<Pick<TaskData, "status" | "blockedBy" | "labels">>): TaskData | null {
     const task = this.get(id);
     if (!task) return null;
     if (fields.status) task.status = fields.status;
     if (fields.blockedBy) task.blockedBy = fields.blockedBy;
+    if (fields.labels) task.labels = fields.labels;
     if (task.status === "completed") this.clearDep(id);
+    this.fs.writeFile(`.tasks/${id}.json`, JSON.stringify(task, null, 2));
+    return task;
+  }
+
+  addLabel(id: string, label: string): TaskData | null {
+    const task = this.get(id);
+    if (!task) return null;
+    if (!task.labels.includes(label)) {
+      task.labels.push(label);
+      this.fs.writeFile(`.tasks/${id}.json`, JSON.stringify(task, null, 2));
+    }
+    return task;
+  }
+
+  removeLabel(id: string, label: string): TaskData | null {
+    const task = this.get(id);
+    if (!task) return null;
+    task.labels = task.labels.filter(l => l !== label);
     this.fs.writeFile(`.tasks/${id}.json`, JSON.stringify(task, null, 2));
     return task;
   }
@@ -78,6 +109,20 @@ class TaskManager {
       try { tasks.push(JSON.parse(raw)); } catch { /* skip */ }
     }
     return tasks.sort((a, b) => Number(a.id) - Number(b.id));
+  }
+
+  listByLabel(label: string): TaskData[] {
+    return this.list().filter(t => t.labels.includes(label));
+  }
+
+  getAllLabels(): string[] {
+    const labels = new Set<string>();
+    for (const task of this.list()) {
+      for (const label of task.labels) {
+        labels.add(label);
+      }
+    }
+    return Array.from(labels).sort();
   }
 
   private clearDep(completedId: string): void {
@@ -97,25 +142,49 @@ class TaskManager {
 }
 
 const TASK_CREATE: ToolDefinition = {
-  name: "task_create", description: "Create a new task.",
+  name: "task_create", description: "Create a new task with optional labels.",
   input_schema: { type: "object", properties: {
     subject: { type: "string", description: "Brief imperative title" },
     description: { type: "string", description: "Detailed description" },
+    labels: { type: "array", items: { type: "string" }, description: "Optional labels (e.g., bug, feature, urgent)" },
   }, required: ["subject", "description"] },
 };
 const TASK_UPDATE: ToolDefinition = {
-  name: "task_update", description: "Update task status or dependencies. Completing auto-unblocks dependents.",
+  name: "task_update", description: "Update task status, dependencies, or labels. Completing auto-unblocks dependents.",
   input_schema: { type: "object", properties: {
-    id: { type: "string" }, status: { type: "string" }, blockedBy: { type: "array" },
+    id: { type: "string" }, 
+    status: { type: "string" }, 
+    blockedBy: { type: "array" },
+    labels: { type: "array", items: { type: "string" } },
   }, required: ["id"] },
 };
 const TASK_LIST: ToolDefinition = {
-  name: "task_list", description: "List all tasks with status and dependencies.",
+  name: "task_list", description: "List all tasks with status, dependencies, and labels.",
   input_schema: { type: "object", properties: {}, required: [] },
 };
 const TASK_GET: ToolDefinition = {
   name: "task_get", description: "Get full details of a task by ID.",
   input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+};
+const TASK_ADD_LABEL: ToolDefinition = {
+  name: "task_add_label", description: "Add a label to a task.",
+  input_schema: { type: "object", properties: {
+    id: { type: "string", description: "Task ID" },
+    label: { type: "string", description: "Label to add (e.g., bug, feature, urgent)" },
+  }, required: ["id", "label"] },
+};
+const TASK_REMOVE_LABEL: ToolDefinition = {
+  name: "task_remove_label", description: "Remove a label from a task.",
+  input_schema: { type: "object", properties: {
+    id: { type: "string", description: "Task ID" },
+    label: { type: "string", description: "Label to remove" },
+  }, required: ["id", "label"] },
+};
+const TASK_LIST_BY_LABEL: ToolDefinition = {
+  name: "task_list_by_label", description: "List all tasks filtered by a specific label.",
+  input_schema: { type: "object", properties: {
+    label: { type: "string", description: "Label to filter by" },
+  }, required: ["label"] },
 };
 
 export class TasksAgent extends BaseAgent {
@@ -126,12 +195,14 @@ export class TasksAgent extends BaseAgent {
     super(config, exec);
     this.taskManager = new TaskManager(exec.fs);
     this.toolExecutor.registerTool("task_create", (input) => {
-      return JSON.stringify(this.taskManager.create(input.subject as string, input.description as string), null, 2);
+      const labels = input.labels as string[] | undefined;
+      return JSON.stringify(this.taskManager.create(input.subject as string, input.description as string, labels), null, 2);
     });
     this.toolExecutor.registerTool("task_update", (input) => {
-      const fields: Partial<Pick<TaskData, "status" | "blockedBy">> = {};
+      const fields: Partial<Pick<TaskData, "status" | "blockedBy" | "labels">> = {};
       if (input.status) fields.status = input.status as TaskData["status"];
       if (input.blockedBy) fields.blockedBy = input.blockedBy as string[];
+      if (input.labels) fields.labels = input.labels as string[];
       const task = this.taskManager.update(input.id as string, fields);
       return task ? JSON.stringify(task, null, 2) : `Error: Task ${input.id} not found`;
     });
@@ -141,23 +212,44 @@ export class TasksAgent extends BaseAgent {
       return tasks.map((t) => {
         const icon = { completed: "[x]", in_progress: "[>]", pending: "[ ]" }[t.status];
         const dep = t.blockedBy.length > 0 ? ` (blocked by: ${t.blockedBy.join(", ")})` : "";
-        return `#${t.id}. ${icon} ${t.subject}${dep}`;
+        const labels = t.labels.length > 0 ? ` [${t.labels.join(", ")}]` : "";
+        return `#${t.id}. ${icon} ${t.subject}${labels}${dep}`;
       }).join("\n");
     });
     this.toolExecutor.registerTool("task_get", (input) => {
       const task = this.taskManager.get(input.id as string);
       return task ? JSON.stringify(task, null, 2) : `Error: Task ${input.id} not found`;
     });
+    this.toolExecutor.registerTool("task_add_label", (input) => {
+      const task = this.taskManager.addLabel(input.id as string, input.label as string);
+      return task ? JSON.stringify(task, null, 2) : `Error: Task ${input.id} not found`;
+    });
+    this.toolExecutor.registerTool("task_remove_label", (input) => {
+      const task = this.taskManager.removeLabel(input.id as string, input.label as string);
+      return task ? JSON.stringify(task, null, 2) : `Error: Task ${input.id} not found`;
+    });
+    this.toolExecutor.registerTool("task_list_by_label", (input) => {
+      const tasks = this.taskManager.listByLabel(input.label as string);
+      if (tasks.length === 0) return `No tasks with label "${input.label}".`;
+      return tasks.map((t) => {
+        const icon = { completed: "[x]", in_progress: "[>]", pending: "[ ]" }[t.status];
+        const dep = t.blockedBy.length > 0 ? ` (blocked by: ${t.blockedBy.join(", ")})` : "";
+        return `#${t.id}. ${icon} ${t.subject}${dep}`;
+      }).join("\n");
+    });
   }
 
   getTools(): ToolDefinition[] {
     return [BASH_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL, EDIT_FILE_TOOL,
-      TASK_CREATE, TASK_UPDATE, TASK_LIST, TASK_GET];
+      TASK_CREATE, TASK_UPDATE, TASK_LIST, TASK_GET, 
+      TASK_ADD_LABEL, TASK_REMOVE_LABEL, TASK_LIST_BY_LABEL];
   }
 
   getSystemPrompt(): string {
     return "You are a coding agent with persistent task management. " +
-      "Use task_create to plan work, task_update to track progress. " +
+      "Use task_create to plan work with optional labels (e.g., labels: [\"bug\", \"urgent\"]), " +
+      "task_update to track progress, task_add_label/task_remove_label to manage labels. " +
+      "Use task_list_by_label to filter tasks. " +
       "Tasks persist across compression. Use blockedBy for ordering.";
   }
 
@@ -165,7 +257,11 @@ export class TasksAgent extends BaseAgent {
     return {
       ...super.getState(),
       tasks: this.taskManager.list().map((t): TaskItem => ({
-        id: t.id, subject: t.subject, status: t.status, blockedBy: t.blockedBy,
+        id: t.id, 
+        subject: t.subject, 
+        status: t.status, 
+        blockedBy: t.blockedBy,
+        labels: t.labels,
       })),
     };
   }
