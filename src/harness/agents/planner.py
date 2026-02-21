@@ -1,0 +1,202 @@
+import json
+import time
+from typing import Any, Callable
+
+from harness.agents.base import BaseAgent
+from harness.models.agent import AgentConfig
+from harness.orchestration.idempotency import CompletionGate, IdempotencyGuard
+from harness.orchestration.scheduler import Scheduler
+
+PLANNER_FORBIDDEN_TOOLS = {"bash", "write_file", "edit_file"}
+
+
+class PlannerGuard:
+    def __init__(self, forbidden_tools: set[str] | None = None):
+        self.forbidden = forbidden_tools or PLANNER_FORBIDDEN_TOOLS
+
+    def check(self, tool_name: str) -> bool:
+        return tool_name not in self.forbidden
+
+
+class RootPlanner(BaseAgent):
+    def __init__(
+        self,
+        client: Any,
+        config: AgentConfig,
+        tool_handlers: dict[str, Callable],
+        tool_schemas: list[dict],
+        event_bus=None,
+        system_prompt: str = "",
+        scheduler: Scheduler | None = None,
+        idempotency_guard: IdempotencyGuard | None = None,
+        completion_gate: CompletionGate | None = None,
+        max_planner_turns: int = 50,
+        max_wall_time_seconds: int = 600,
+    ):
+        super().__init__(
+            client=client,
+            config=config,
+            tool_handlers=tool_handlers,
+            tool_schemas=tool_schemas,
+            event_bus=event_bus,
+            system_prompt=system_prompt,
+        )
+        self.scheduler = scheduler
+        self.idempotency_guard = idempotency_guard
+        self.completion_gate = completion_gate
+        self.guard = PlannerGuard()
+        self.max_planner_turns = max_planner_turns
+        self.max_wall_time_seconds = max_wall_time_seconds
+        self._spawned_workers: list[str] = []
+        self._reviewed_handoffs: list[str] = []
+
+    def run(self, initial_message: str = "") -> str:
+        self._start_time = time.time()
+        if initial_message:
+            self.messages.append({"role": "user", "content": initial_message})
+
+        last_text = ""
+        while True:
+            if self.is_over_limits():
+                break
+
+            self.on_before_llm_call()
+            response = self._call_llm()
+            self.total_tokens += int(getattr(response.usage, "input_tokens", 0)) + int(
+                getattr(response.usage, "output_tokens", 0)
+            )
+            self.turn_count += 1
+            self.messages.append({"role": "assistant", "content": response.content})
+
+            text_blocks = [
+                block.text
+                for block in response.content
+                if getattr(block, "type", None) == "text" and hasattr(block, "text")
+            ]
+            if text_blocks:
+                last_text = "\n".join(text_blocks)
+
+            if response.stop_reason != "tool_use":
+                self.on_loop_exit()
+                return last_text
+
+            tool_results: list[dict[str, str]] = []
+            hook_results: list[dict] = []
+            for block in response.content:
+                if getattr(block, "type", None) != "tool_use":
+                    continue
+                handler = self.tool_handlers.get(block.name)
+                if handler:
+                    result = handler(**block.input)
+                else:
+                    result = {"error": f"Unknown tool: {block.name}"}
+                hook_results.append({"tool_name": block.name, "tool_use_id": block.id, "result": result})
+                content = json.dumps(result) if isinstance(result, dict) else str(result)
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": content,
+                    }
+                )
+
+            self.messages.append({"role": "user", "content": tool_results})
+            self.on_tool_result(hook_results)
+
+            if self.total_tokens >= self.config.token_budget:
+                break
+            if self._start_time is not None and (time.time() - self._start_time >= self.config.timeout_seconds):
+                break
+
+        self.on_loop_exit()
+        return last_text
+
+    def on_tool_result(self, results: list[dict]) -> None:
+        for result in list(results):
+            tool_name = result.get("tool_name", "")
+            if not self.guard.check(tool_name):
+                results.append(
+                    {
+                        "tool_name": tool_name,
+                        "error": f"Planner cannot use tool: {tool_name}",
+                    }
+                )
+
+    def can_spawn_worker(self, task_id: str) -> bool:
+        if self.idempotency_guard:
+            return self.idempotency_guard.can_spawn_worker(task_id)
+        return True
+
+    def spawn_worker(self, task_id: str) -> str:
+        if not self.can_spawn_worker(task_id):
+            raise ValueError(f"Worker already spawned for task: {task_id}")
+
+        self._spawned_workers.append(task_id)
+        if self.idempotency_guard:
+            self.idempotency_guard.mark_worker_spawned(task_id)
+        return f"worker-{task_id}"
+
+    def check_completion(
+        self,
+        workers,
+        handoffs,
+        tasks,
+        error_budget,
+        reconciliation_passed,
+    ) -> tuple[bool, list[str]]:
+        if self.completion_gate:
+            return self.completion_gate.declare_done(
+                workers,
+                handoffs,
+                tasks,
+                error_budget,
+                reconciliation_passed,
+            )
+        return (True, [])
+
+    def is_over_limits(self) -> bool:
+        if self.turn_count >= self.max_planner_turns:
+            return True
+
+        if self._start_time is not None:
+            if time.time() - self._start_time >= self.max_wall_time_seconds:
+                return True
+
+        return False
+
+
+class SubPlanner(BaseAgent):
+    def __init__(
+        self,
+        client: Any,
+        config: AgentConfig,
+        tool_handlers: dict[str, Callable],
+        tool_schemas: list[dict],
+        event_bus=None,
+        system_prompt: str = "",
+        max_depth: int = 3,
+    ):
+        super().__init__(
+            client=client,
+            config=config,
+            tool_handlers=tool_handlers,
+            tool_schemas=tool_schemas,
+            event_bus=event_bus,
+            system_prompt=system_prompt,
+        )
+        self.max_depth = max_depth
+        self.guard = PlannerGuard()
+
+    def can_delegate(self) -> bool:
+        return self.config.depth < self.max_depth
+
+    def on_tool_result(self, results: list[dict]) -> None:
+        for result in list(results):
+            tool_name = result.get("tool_name", "")
+            if not self.guard.check(tool_name):
+                results.append(
+                    {
+                        "tool_name": tool_name,
+                        "error": f"Planner cannot use tool: {tool_name}",
+                    }
+                )

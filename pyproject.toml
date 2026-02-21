@@ -8,9 +8,11 @@ requires-python = ">=3.10"
 
 dependencies = [
     "anthropic>=0.25.0",
+    "instructor>=1.0.0",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
     "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
 ]
 
 [dependency-groups]
