@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from functools import partial
+from pathlib import Path
 from typing import Any, Callable
 
 from harness.agents.planner import RootPlanner
@@ -18,10 +19,14 @@ from harness.orchestration.scratchpad import Scratchpad
 from harness.orchestration.shutdown import ShutdownHandler
 from harness.rendering import RichRenderer
 from harness.tools.worker_tools import (
+    ask_handler,
     bash_handler,
     edit_file_handler,
+    find_files_handler,
+    grep_handler,
     read_file_handler,
     submit_handoff_handler,
+    todo_write_handler,
     write_file_handler,
 )
 
@@ -46,6 +51,33 @@ PLANNER_SYSTEM_PROMPT = (
     "- Every spawned worker MUST be reviewed and accepted/rejected.\n"
     "- Use blocked_by in create_task when ordering matters.\n"
     "- Check error budget via get_error_budget if errors occur.\n"
+)
+
+WORKER_SYSTEM_PROMPT = (
+    "You are a Worker agent in a multi-agent orchestration harness.\n\n"
+    "Your task will be specified below. Execute it completely.\n\n"
+    "Tools available: bash, read_file, write_file, edit_file, grep, find_files, todo_write, submit_handoff.\n\n"
+    "Constraints:\n"
+    "- NEVER decompose work into subtasks or spawn other agents.\n"
+    "- NEVER modify files outside your assigned workspace.\n"
+    "- NEVER skip testing your changes.\n"
+    "- ALWAYS submit a handoff via submit_handoff when your work is complete.\n"
+    "- Do NOT ask for clarification unless the task is truly ambiguous.\n"
+    "- Do NOT plan beyond your delegated scope.\n"
+)
+
+SUB_PLANNER_SYSTEM_PROMPT = (
+    "You are a Sub-Planner in a multi-agent orchestration harness.\n\n"
+    "You handle a scoped subset of work delegated by the Root Planner.\n\n"
+    "Constraints:\n"
+    "- NEVER plan beyond your delegated scope.\n"
+    "- NEVER write code or make file changes.\n"
+    "- ALWAYS report progress to the root planner.\n"
+    "- Do NOT spawn sub-planners of your own unless depth allows.\n"
+)
+
+WATCHDOG_SYSTEM_PROMPT = (
+    "You are a Watchdog agent monitoring worker health.\n\nYou detect failure modes and recommend interventions.\n"
 )
 
 WORKER_TOOL_SCHEMAS = [
@@ -111,6 +143,84 @@ WORKER_TOOL_SCHEMAS = [
                 "narrative": {"type": "string"},
             },
             "required": ["agent_id", "task_id", "status", "narrative"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": "Search file contents using regex pattern.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                "path": {"type": "string", "description": "Relative path to search in"},
+                "include": {"type": "string", "description": "File pattern filter (e.g., *.py)"},
+                "context_lines": {"type": "integer", "description": "Lines of context around matches"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "find_files",
+        "description": "Find files in workspace by glob pattern.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern to match files"},
+                "max_results": {"type": "integer", "description": "Maximum number of files to return"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "todo_write",
+        "description": "Write and validate a structured todo list.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "todos": {
+                    "type": "array",
+                    "description": "List of todo items",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string"},
+                            "status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "completed", "cancelled"],
+                            },
+                            "priority": {
+                                "type": "string",
+                                "enum": ["high", "medium", "low"],
+                            },
+                        },
+                        "required": ["content", "status", "priority"],
+                    },
+                }
+            },
+            "required": ["todos"],
+        },
+    },
+    {
+        "name": "ask",
+        "description": "Ask a clarification question back to planner.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Question to ask the planner"},
+                "options": {
+                    "type": "array",
+                    "description": "Optional response choices",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string"},
+                            "value": {"type": "string"},
+                        },
+                        "required": ["label", "value"],
+                    },
+                },
+            },
+            "required": ["question"],
         },
     },
 ]
@@ -257,6 +367,21 @@ class HarnessRunner:
         self._async_tasks: dict[str, asyncio.Task] = {}
         self._handoffs: dict[str, dict] = {}
         self._base_snapshots: dict[str, dict[str, str]] = {}
+        self._prompt_texts = self._load_prompts()
+
+    def _load_prompt_file(self, filename: str, fallback: str) -> str:
+        prompt_path = Path(__file__).resolve().parent / "prompts" / filename
+        if not prompt_path.exists():
+            return fallback
+        return prompt_path.read_text(encoding="utf-8").strip()
+
+    def _load_prompts(self) -> dict[str, str]:
+        return {
+            "planner": self._load_prompt_file("planner.md", PLANNER_SYSTEM_PROMPT),
+            "worker": self._load_prompt_file("worker.md", WORKER_SYSTEM_PROMPT),
+            "sub_planner": self._load_prompt_file("sub_planner.md", SUB_PLANNER_SYSTEM_PROMPT),
+            "watchdog": self._load_prompt_file("watchdog.md", WATCHDOG_SYSTEM_PROMPT),
+        }
 
     def _on_shutdown(self) -> None:
         try:
@@ -337,15 +462,18 @@ class HarnessRunner:
             tool_schemas=WORKER_TOOL_SCHEMAS,
             event_bus=self.event_bus,
             system_prompt=(
-                f"You are a worker. Complete this task: "
-                f"{task or (stored_task.description if stored_task else task_id)}. "
-                "Use bash, read_file, write_file, and edit_file. "
-                "When done, submit your work via submit_handoff."
+                f"{self._prompt_texts['worker']}\n\n"
+                f"Task: {task or (stored_task.description if stored_task else task_id)}"
             ),
             workspace_root=workspace_root,
             scratchpad=Scratchpad(),
             watchdog=self.watchdog,
         )
+        worker._identity_text = "You are a Worker. Execute the assigned task. Do NOT decompose or spawn."
+        worker._alignment_text = "Remember: you are a Worker. Execute the task. Do not plan or decompose."
+        worker._reflection_interval = self.config.freshness.self_reflection_interval
+        worker._pivot_threshold = self.config.freshness.pivot_threshold
+        worker._hard_stop_threshold = self.config.freshness.hard_stop_threshold
 
         self._workers[task_id] = worker
 
@@ -497,6 +625,10 @@ class HarnessRunner:
             "read_file": partial(read_file_handler, workspace_path=workspace_path),
             "write_file": partial(write_file_handler, workspace_path=workspace_path),
             "edit_file": partial(edit_file_handler, workspace_path=workspace_path),
+            "grep": partial(grep_handler, workspace_path=workspace_path),
+            "find_files": partial(find_files_handler, workspace_path=workspace_path),
+            "todo_write": partial(todo_write_handler, workspace_path=workspace_path),
+            "ask": partial(ask_handler, workspace_path=workspace_path),
             "submit_handoff": submit_handoff_handler,
         }
 
@@ -538,6 +670,10 @@ class HarnessRunner:
                 "read_file": partial(read_file_handler, workspace_path=repo),
                 "write_file": partial(write_file_handler, workspace_path=repo),
                 "edit_file": partial(edit_file_handler, workspace_path=repo),
+                "grep": partial(grep_handler, workspace_path=repo),
+                "find_files": partial(find_files_handler, workspace_path=repo),
+                "todo_write": partial(todo_write_handler, workspace_path=repo),
+                "ask": partial(ask_handler, workspace_path=repo),
                 "submit_handoff": submit_handoff_handler,
             }
 
@@ -600,11 +736,16 @@ class HarnessRunner:
             tool_handlers=self._build_planner_handlers(),
             tool_schemas=PLANNER_TOOL_SCHEMAS,
             event_bus=self.event_bus,
-            system_prompt=PLANNER_SYSTEM_PROMPT,
+            system_prompt=self._prompt_texts["planner"],
             completion_gate=self.completion_gate,
             max_planner_turns=50,
             max_wall_time_seconds=600,
         )
+        planner._identity_text = "You are a Planner. Decompose and delegate. NEVER write code."
+        planner._alignment_text = "Remember: you are a Planner. Decompose and delegate. Never write code."
+        planner._reflection_interval = self.config.freshness.self_reflection_interval
+        planner._pivot_threshold = self.config.freshness.pivot_threshold
+        planner._hard_stop_threshold = self.config.freshness.hard_stop_threshold
 
         self.renderer.console.print("[bold]Harness started[/]")
         self.renderer.console.print(f"[dim]Model: {self.config.llm.model}[/]")

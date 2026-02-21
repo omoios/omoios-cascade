@@ -3,7 +3,7 @@ import json
 import time
 from typing import Any, Callable
 
-from harness.events import EventBus
+from harness.events import EventBus, IdentityReinjected, PivotEncouraged, SelfReflectionInjected
 from harness.models.agent import AgentConfig
 
 
@@ -29,6 +29,12 @@ class BaseAgent:
         self.total_tokens: int = 0
         self.turn_count: int = 0
         self._start_time: float | None = None
+        self._identity_text: str = ""
+        self._alignment_text: str = ""
+        self._reflection_interval: int = 10
+        self._consecutive_failures: dict[str, int] = {}
+        self._pivot_threshold: int = 3
+        self._hard_stop_threshold: int = 5
 
     async def run(self, initial_message: str = "") -> str:
         self._start_time = time.time()
@@ -108,9 +114,69 @@ class BaseAgent:
         current_tokens = estimate_tokens(self.messages)
         if current_tokens > self.COMPRESSION_THRESHOLD and len(self.messages) > 6:
             self.messages = microcompact(self.messages, keep_recent=3)
+            if self._identity_text:
+                self.messages.insert(0, {"role": "user", "content": f"[IDENTITY REMINDER] {self._identity_text}"})
+                if self.event_bus:
+                    await self.event_bus.emit(IdentityReinjected(agent_id=self.config.agent_id))
+            if self._alignment_text:
+                self.messages.append({"role": "user", "content": f"[ALIGNMENT] {self._alignment_text}"})
+
+        if self.turn_count > 0 and self.turn_count % self._reflection_interval == 0:
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "[SELF-REFLECTION] Pause and assess:\n"
+                        "- Are you making progress or going in circles?\n"
+                        "- Is your current approach working? If not, consider a different strategy.\n"
+                        "- What is the most important next step?"
+                    ),
+                }
+            )
+            if self.event_bus:
+                await self.event_bus.emit(
+                    SelfReflectionInjected(agent_id=self.config.agent_id, turn_count=self.turn_count)
+                )
 
     async def on_tool_result(self, results: list[dict]) -> None:
-        pass
+        for result in results:
+            tool_name = result.get("tool_name", "")
+            tool_result = result.get("result", {})
+            is_error = isinstance(tool_result, dict) and "error" in tool_result
+
+            if is_error:
+                self._consecutive_failures[tool_name] = self._consecutive_failures.get(tool_name, 0) + 1
+                count = self._consecutive_failures[tool_name]
+                if count >= self._hard_stop_threshold:
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[HARD STOP] This approach is not working after 5 failures. "
+                                "Step back and reconsider the problem entirely."
+                            ),
+                        }
+                    )
+                elif count >= self._pivot_threshold:
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"[PIVOT] Your current approach with {tool_name} has failed {count} times. "
+                                "Try a completely different approach."
+                            ),
+                        }
+                    )
+                    if self.event_bus:
+                        await self.event_bus.emit(
+                            PivotEncouraged(
+                                agent_id=self.config.agent_id,
+                                tool_name=tool_name,
+                                failure_count=count,
+                            )
+                        )
+            else:
+                self._consecutive_failures[tool_name] = 0
 
     async def on_loop_exit(self) -> None:
         pass

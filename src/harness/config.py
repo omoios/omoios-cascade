@@ -53,6 +53,14 @@ class WatchdogConfig(BaseSettings):
     token_burn_threshold: int = Field(default=16_000)
 
 
+class FreshnessConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="FRESHNESS_")
+
+    self_reflection_interval: int = Field(default=10, description="Inject self-reflection every N turns")
+    pivot_threshold: int = Field(default=3, description="Consecutive failures before pivot suggestion")
+    hard_stop_threshold: int = Field(default=5, description="Consecutive failures before hard stop")
+
+
 class HarnessConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=None,
@@ -65,6 +73,7 @@ class HarnessConfig(BaseSettings):
     agents: AgentLimitsConfig = Field(default_factory=AgentLimitsConfig)
     errors: ErrorPolicyConfig = Field(default_factory=ErrorPolicyConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
+    freshness: FreshnessConfig = Field(default_factory=FreshnessConfig)
     repos: list[str] = Field(default_factory=list, description="Paths to target repositories")
     test_command: str | None = Field(default=None, description="Command to run for reconciliation")
     instructions: str = Field(default="", description="Top-level instructions for the harness")

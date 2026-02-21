@@ -1,6 +1,9 @@
 import asyncio
 import os
+from pathlib import Path
 from typing import Any
+
+from harness.models.todo import TodoItem
 
 
 async def bash_handler(command: str, workspace_path: str, timeout: int = 30) -> dict[str, Any]:
@@ -113,3 +116,115 @@ async def submit_handoff_handler(
     for key, value in kwargs.items():
         handoff[key] = value
     return handoff
+
+
+async def grep_handler(
+    pattern: str,
+    path: str = ".",
+    workspace_path: str = ".",
+    include: str | None = None,
+    context_lines: int = 0,
+) -> dict[str, Any]:
+    workspace_real = os.path.realpath(workspace_path)
+    search_real = os.path.realpath(os.path.join(workspace_path, path))
+
+    if os.path.commonpath([workspace_real, search_real]) != workspace_real:
+        return {"error": f"Path escapes workspace: {path}"}
+    if not os.path.exists(search_real):
+        return {"error": f"Path not found: {path}"}
+
+    cmd = ["grep", "-rn"]
+    if include:
+        cmd.append(f"--include={include}")
+    if context_lines > 0:
+        cmd.extend(["-C", str(context_lines)])
+    cmd.extend(["--", pattern, search_real])
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_bytes, stderr_bytes = await proc.communicate()
+    stdout = stdout_bytes.decode() if stdout_bytes else ""
+    stderr = stderr_bytes.decode() if stderr_bytes else ""
+
+    if proc.returncode not in (0, 1):
+        return {"error": stderr or "grep failed", "exit_code": proc.returncode}
+
+    matches: list[dict[str, Any]] = []
+    for line in stdout.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        line_num = parts[1]
+        if not line_num.isdigit():
+            continue
+        file_path = os.path.relpath(parts[0], workspace_real)
+        matches.append(
+            {
+                "file": file_path,
+                "line": int(line_num),
+                "content": parts[2],
+            }
+        )
+
+    total = len(matches)
+    truncated = total > 100
+    result: dict[str, Any] = {
+        "matches": matches[:100],
+        "total": total,
+        "truncated": truncated,
+    }
+    if truncated:
+        result["notice"] = "Output truncated to 100 matches"
+    return result
+
+
+async def find_files_handler(
+    pattern: str,
+    workspace_path: str = ".",
+    max_results: int = 100,
+) -> dict[str, Any]:
+    workspace = Path(workspace_path)
+
+    def _glob() -> list[str]:
+        matches = [str(path.relative_to(workspace)) for path in workspace.glob(pattern) if path.is_file()]
+        return sorted(matches)
+
+    files = await asyncio.to_thread(_glob)
+    total = len(files)
+    truncated = total > max_results
+    return {
+        "files": files[:max_results],
+        "total": total,
+        "truncated": truncated,
+    }
+
+
+async def todo_write_handler(
+    todos: list[dict],
+    workspace_path: str = ".",
+) -> dict[str, Any]:
+    _ = workspace_path
+    required = {"content", "status", "priority"}
+    for idx, todo in enumerate(todos):
+        missing = required - todo.keys()
+        if missing:
+            missing_fields = ", ".join(sorted(missing))
+            return {"error": f"Todo at index {idx} missing fields: {missing_fields}"}
+        try:
+            TodoItem.model_validate(todo)
+        except Exception as exc:
+            return {"error": f"Todo at index {idx} invalid: {exc}"}
+    return {"status": "ok", "count": len(todos)}
+
+
+async def ask_handler(
+    question: str,
+    options: list[dict] | None = None,
+    workspace_path: str = ".",
+) -> dict[str, Any]:
+    _ = options
+    _ = workspace_path
+    return {"status": "asked", "question": question}

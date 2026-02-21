@@ -87,26 +87,27 @@ class Worker(BaseAgent):
             )
 
     async def on_tool_result(self, results: list[dict]) -> None:
-        if not self.watchdog:
-            return
-        from harness.models.watchdog import ActivityEntry
+        if self.watchdog:
+            from harness.models.watchdog import ActivityEntry
 
-        for result in results:
-            tool_name = result.get("tool_name", "")
-            files_touched = []
-            tool_result = result.get("result", {})
-            if isinstance(tool_result, dict):
-                path = tool_result.get("path", "")
-                if path:
-                    files_touched.append(path)
-            self.watchdog.record_activity(
-                ActivityEntry(
-                    event_type=f"tool:{tool_name}",
-                    agent_id=self.config.agent_id,
-                    tokens_used=0,
-                    files_touched=files_touched,
+            for result in results:
+                tool_name = result.get("tool_name", "")
+                files_touched = []
+                tool_result = result.get("result", {})
+                if isinstance(tool_result, dict):
+                    path = tool_result.get("path", "")
+                    if path:
+                        files_touched.append(path)
+                self.watchdog.record_activity(
+                    ActivityEntry(
+                        event_type=f"tool:{tool_name}",
+                        agent_id=self.config.agent_id,
+                        tokens_used=0,
+                        files_touched=files_touched,
+                    )
                 )
-            )
+
+        await super().on_tool_result(results)
 
     def cleanup(self) -> None:
         if self.workspace_path and os.path.isdir(self.workspace_path):

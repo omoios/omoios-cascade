@@ -1,9 +1,13 @@
 from harness.tools.registry import ToolRegistry
 from harness.tools.worker_tools import (
+    ask_handler,
     bash_handler,
     edit_file_handler,
+    find_files_handler,
+    grep_handler,
     read_file_handler,
     submit_handoff_handler,
+    todo_write_handler,
     write_file_handler,
 )
 
@@ -125,6 +129,88 @@ WORKER_TOOL_SPECS = [
             "required": ["agent_id", "task_id", "status", "narrative"],
         },
         "handler": submit_handoff_handler,
+    },
+    {
+        "name": "grep",
+        "description": "Search file contents using regex pattern.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                "path": {"type": "string", "description": "Relative path to search in"},
+                "include": {"type": "string", "description": "File pattern filter (e.g., *.py)"},
+                "context_lines": {"type": "integer", "description": "Lines of context around matches"},
+            },
+            "required": ["pattern"],
+        },
+        "handler": grep_handler,
+    },
+    {
+        "name": "find_files",
+        "description": "Find files in workspace by glob pattern.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern to match files"},
+                "max_results": {"type": "integer", "description": "Maximum number of files to return"},
+            },
+            "required": ["pattern"],
+        },
+        "handler": find_files_handler,
+    },
+    {
+        "name": "todo_write",
+        "description": "Write and validate a structured todo list.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "todos": {
+                    "type": "array",
+                    "description": "List of todo items",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string"},
+                            "status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "completed", "cancelled"],
+                            },
+                            "priority": {
+                                "type": "string",
+                                "enum": ["high", "medium", "low"],
+                            },
+                        },
+                        "required": ["content", "status", "priority"],
+                    },
+                }
+            },
+            "required": ["todos"],
+        },
+        "handler": todo_write_handler,
+    },
+    {
+        "name": "ask",
+        "description": "Ask a clarification question back to planner.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Question to ask the planner"},
+                "options": {
+                    "type": "array",
+                    "description": "Optional response choices",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string"},
+                            "value": {"type": "string"},
+                        },
+                        "required": ["label", "value"],
+                    },
+                },
+            },
+            "required": ["question"],
+        },
+        "handler": ask_handler,
     },
 ]
 

@@ -16,6 +16,8 @@ from harness.models.state import (
     WorkerSnapshot,
 )
 from harness.models.task import Task, TaskPriority, TaskStatus
+from harness.models.task_spec import TaskSpec
+from harness.models.todo import TodoItem, TodoPriority, TodoStatus
 from harness.models.watchdog import ActivityEntry, FailureMode, WatchdogEvent
 from harness.models.workspace import Workspace, WorkspaceState
 
@@ -44,7 +46,11 @@ __all__ = [
     "Task",
     "TaskBoardSnapshot",
     "TaskPriority",
+    "TaskSpec",
     "TaskStatus",
+    "TodoItem",
+    "TodoPriority",
+    "TodoStatus",
     "WatchdogEvent",
     "WorkerSnapshot",
     "Workspace",

@@ -58,6 +58,26 @@ class PlannerDecision(HarnessEvent):
     event_type: str = "planner_decision"
 
 
+class SelfReflectionInjected(HarnessEvent):
+    turn_count: int = 0
+    event_type: str = "self_reflection_injected"
+
+
+class PivotEncouraged(HarnessEvent):
+    tool_name: str = ""
+    failure_count: int = 0
+    event_type: str = "pivot_encouraged"
+
+
+class IdentityReinjected(HarnessEvent):
+    event_type: str = "identity_reinjected"
+
+
+class IntentValidationWarning(HarnessEvent):
+    warnings: list[str] = Field(default_factory=list)
+    event_type: str = "intent_validation_warning"
+
+
 class EventBus:
     def __init__(self):
         self._subscribers: dict[str, list[Callable[[HarnessEvent], Any]]] = {}
