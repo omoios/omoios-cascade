@@ -8,6 +8,14 @@ from harness.models.workspace import Workspace, WorkspaceState
 
 IGNORE_PATTERNS = [".git", ".workspaces", ".team", ".tasks", "node_modules", "__pycache__"]
 
+try:
+    from harness_core import compute_diff as _rust_compute_diff
+    from harness_core import snapshot_workspace as _rust_snapshot
+
+    HAS_RUST = True
+except ImportError:
+    HAS_RUST = False
+
 
 async def create_workspace(repo_path: str, worker_id: str, workspaces_root: str | None = None) -> Workspace:
     if workspaces_root is None:
@@ -52,6 +60,10 @@ def compute_diff(workspace: Workspace, base_snapshot: dict[str, str] | None = No
     if base_snapshot is None:
         return []
 
+    if HAS_RUST:
+        raw_diffs = _rust_compute_diff(base_snapshot, current_snapshot)
+        return [FileDiff(path=path, before_hash=bh, after_hash=ah, diff_text=dt) for path, bh, ah, dt in raw_diffs]
+
     diffs = []
     all_paths = set(base_snapshot.keys()) | set(current_snapshot.keys())
 
@@ -88,6 +100,9 @@ def cleanup_workspace(workspace: Workspace) -> None:
 
 
 def snapshot_workspace(workspace_path: str) -> dict[str, str]:
+    if HAS_RUST:
+        return _rust_snapshot(workspace_path)
+
     result = {}
     for root, _, files in os.walk(workspace_path):
         for filename in files:

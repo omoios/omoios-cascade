@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.13.1",
     "python-dotenv>=1.0.0",
     "rich>=13.0.0",
+    "harness-core",
 ]
 
 [dependency-groups]
@@ -28,6 +29,12 @@ build-backend = "uv_build"
 
 [tool.uv]
 default-groups = ["dev"]
+
+[tool.uv.workspace]
+members = ["src/harness_core"]
+
+[tool.uv.sources]
+harness-core = { workspace = true }
 
 [tool.ruff]
 target-version = "py311"
