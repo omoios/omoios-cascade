@@ -175,15 +175,16 @@ Layer 6:   End-to-end (real LLM)
 - [x] UV migration (pyproject.toml, uv.lock)
 - [x] CI workflow (web/ typecheck + vitest + build)
 
+- [x] `src/harness/` package implementation (27 source files: models, planner, worker, watchdog, cli, events, tools, git, orchestration)
+- [x] Instructor library integration (structured.py stub + pyproject.toml dependency)
+- [x] Event bus + Rich CLI renderer (events.py + rendering.py + pyproject.toml dependency)
+- [x] Python test suite (tests/python/ -- 194 tests across 18 files, layers 0-5.6)
+- [x] Layer 3.5 Structured Output test section in testing-strategy.md
+- [x] Graceful shutdown (signal handler + checkpoint + resume -- orchestration/shutdown.py)
+
 ### Not Started
 
-- [ ] `src/harness/` package implementation (models.py, planner.py, worker.py, watchdog.py, cli.py, events.py)
-- [ ] Instructor library integration
-- [ ] Event bus + Rich CLI renderer
-- [ ] Python test suite (tests/python/)
-- [ ] Layer 3.5 Structured Output test section in testing-strategy.md
 - [ ] Coherence appendix document (cross-session mechanism evolution)
-- [ ] Graceful shutdown (signal handler + checkpoint + resume)
 - [ ] Workspace cleanup with configurable retain
 
 ---

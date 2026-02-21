@@ -403,6 +403,25 @@ class TestMerge:
 uv run pytest tests/python/test_git.py -v
 ```
 
+### Layer 3.5: Structured Output (Pydantic + Instructor)
+
+Tests that pydantic models correctly validate and reject structured LLM outputs.
+These sit between tool tests (Layer 3) and agent loop tests (Layer 4) because
+structured output validation happens at the boundary between tool execution
+and agent decision-making.
+
+What to test:
+- Handoff model validates required fields and rejects invalid status values
+- ScratchpadSchema enforces non-empty required sections
+- PlannerDecision model (when implemented) validates action enums
+- Instructor extraction produces valid model instances from LLM responses (requires mocked LLM)
+
+What to mock:
+- LLM responses (for instructor extraction tests)
+- Nothing else — these test pure validation logic
+
+Test file: tests/python/test_structured_output.py
+
 ## Layer 4: Agent Loop Tests (Mocked LLM)
 
 Test the agent loop mechanics with a mocked Anthropic client. This verifies the loop control flow without spending real tokens.
