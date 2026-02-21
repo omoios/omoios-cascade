@@ -5,6 +5,9 @@ from typing import Any
 
 from harness.models.todo import TodoItem
 
+_background_tasks: dict[str, asyncio.Task] = {}
+_background_results: dict[str, dict] = {}
+
 
 async def bash_handler(command: str, workspace_path: str, timeout: int = 30) -> dict[str, Any]:
     dangerous = ["rm -rf /", "mkfs", "dd if=", "format", "> /dev/"]
@@ -228,3 +231,70 @@ async def ask_handler(
     _ = options
     _ = workspace_path
     return {"status": "asked", "question": question}
+
+
+async def background_task_handler(
+    description: str,
+    command: str,
+    workspace_path: str = ".",
+    timeout: int = 120,
+) -> dict[str, Any]:
+    import uuid
+
+    task_id = f"bg_{uuid.uuid4().hex[:8]}"
+
+    async def _run() -> None:
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=workspace_path,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            _background_results[task_id] = {
+                "status": "completed",
+                "exit_code": proc.returncode,
+                "stdout": stdout.decode(errors="replace")[:10000],
+                "stderr": stderr.decode(errors="replace")[:5000],
+            }
+        except asyncio.TimeoutError:
+            _background_results[task_id] = {
+                "status": "timeout",
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": "Timed out",
+            }
+        except Exception as e:
+            _background_results[task_id] = {
+                "status": "error",
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": str(e),
+            }
+
+    task = asyncio.create_task(_run())
+    _background_tasks[task_id] = task
+    return {"task_id": task_id, "status": "running", "description": description}
+
+
+async def check_background_handler(
+    task_id: str,
+    workspace_path: str = ".",
+) -> dict[str, Any]:
+    _ = workspace_path
+    if task_id in _background_results:
+        result = _background_results.pop(task_id)
+        _background_tasks.pop(task_id, None)
+        return result
+
+    if task_id in _background_tasks:
+        task = _background_tasks[task_id]
+        if task.done():
+            return _background_results.pop(
+                task_id,
+                {"status": "completed", "exit_code": 0, "stdout": "", "stderr": ""},
+            )
+        return {"status": "running"}
+
+    return {"status": "not_found", "error": f"Unknown task_id: {task_id}"}

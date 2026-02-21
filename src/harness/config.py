@@ -11,6 +11,16 @@ class LLMConfig(BaseSettings):
     base_url: str | None = Field(default=None)
 
 
+class ModelConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="MODEL_")
+
+    default: str = Field(default="claude-sonnet-4-20250514", description="Default model for all roles")
+    smol: str | None = Field(default=None, description="Cheap model for quick/explore tasks")
+    slow: str | None = Field(default=None, description="Powerful model for complex reasoning")
+    plan: str | None = Field(default=None, description="Model for planner role")
+    commit: str | None = Field(default=None, description="Model for commit message generation")
+
+
 class WorkspaceConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="WORKSPACE_")
 
@@ -61,6 +71,14 @@ class FreshnessConfig(BaseSettings):
     hard_stop_threshold: int = Field(default=5, description="Consecutive failures before hard stop")
 
 
+class BrowserConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="BROWSER_")
+
+    enabled: bool = Field(default=False, description="Enable browser tools")
+    headless: bool = Field(default=True, description="Run browser in headless mode")
+    timeout: int = Field(default=30000, description="Default page timeout in ms")
+
+
 class HarnessConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=None,
@@ -69,11 +87,13 @@ class HarnessConfig(BaseSettings):
     )
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    models: ModelConfig = Field(default_factory=ModelConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     agents: AgentLimitsConfig = Field(default_factory=AgentLimitsConfig)
     errors: ErrorPolicyConfig = Field(default_factory=ErrorPolicyConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     freshness: FreshnessConfig = Field(default_factory=FreshnessConfig)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
     repos: list[str] = Field(default_factory=list, description="Paths to target repositories")
     test_command: str | None = Field(default=None, description="Command to run for reconciliation")
     instructions: str = Field(default="", description="Top-level instructions for the harness")

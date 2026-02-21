@@ -1,7 +1,10 @@
+from harness.tools.browser_tool import browser_handler, visual_verify_handler
 from harness.tools.registry import ToolRegistry
 from harness.tools.worker_tools import (
     ask_handler,
+    background_task_handler,
     bash_handler,
+    check_background_handler,
     edit_file_handler,
     find_files_handler,
     grep_handler,
@@ -211,6 +214,72 @@ WORKER_TOOL_SPECS = [
             "required": ["question"],
         },
         "handler": ask_handler,
+    },
+    {
+        "name": "background_task",
+        "description": "Spawn a background command that runs asynchronously.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "What this background task does"},
+                "command": {"type": "string", "description": "Shell command to run"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds (default 120)"},
+            },
+            "required": ["description", "command"],
+        },
+        "handler": background_task_handler,
+    },
+    {
+        "name": "check_background",
+        "description": "Check status of a background task.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID returned by background_task"},
+            },
+            "required": ["task_id"],
+        },
+        "handler": check_background_handler,
+    },
+    {
+        "name": "browser",
+        "description": "Automate a headless browser: navigate, screenshot, click, type, evaluate JS, get text.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": (
+                        "Action: navigate, screenshot, click, type, evaluate, get_text, accessibility_snapshot, close"
+                    ),
+                },
+                "url": {"type": "string", "description": "URL for navigate action"},
+                "selector": {"type": "string", "description": "CSS selector for click/type/get_text"},
+                "text": {"type": "string", "description": "Text for type action"},
+                "script": {"type": "string", "description": "JavaScript for evaluate action"},
+                "path": {"type": "string", "description": "File path for screenshot save"},
+                "session_id": {"type": "string", "description": "Browser session ID (default: 'default')"},
+            },
+            "required": ["action"],
+        },
+        "handler": browser_handler,
+    },
+    {
+        "name": "visual_verify",
+        "description": "Navigate to URL, screenshot, and verify page matches expected description.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to verify"},
+                "expected": {
+                    "type": "string",
+                    "description": "Expected description of what the page should show",
+                },
+                "session_id": {"type": "string", "description": "Browser session ID"},
+            },
+            "required": ["url", "expected"],
+        },
+        "handler": visual_verify_handler,
     },
 ]
 

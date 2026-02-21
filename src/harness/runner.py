@@ -6,10 +6,11 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
-from harness.agents.planner import RootPlanner
+from harness.agents.planner import RootPlanner, SubPlanner
 from harness.agents.watchdog import Watchdog
 from harness.agents.worker import Worker
 from harness.config import HarnessConfig
+from harness.config_loader import HookRegistry, SkillLoader, discover_skills, load_agents_md
 from harness.events import EventBus, WorkerSpawned
 from harness.models.agent import AgentConfig, AgentRole
 from harness.models.error_budget import ErrorBudget
@@ -18,9 +19,12 @@ from harness.orchestration.idempotency import CompletionGate
 from harness.orchestration.scratchpad import Scratchpad
 from harness.orchestration.shutdown import ShutdownHandler
 from harness.rendering import RichRenderer
+from harness.tools.browser_tool import browser_handler, visual_verify_handler
 from harness.tools.worker_tools import (
     ask_handler,
+    background_task_handler,
     bash_handler,
+    check_background_handler,
     edit_file_handler,
     find_files_handler,
     grep_handler,
@@ -223,6 +227,69 @@ WORKER_TOOL_SCHEMAS = [
             "required": ["question"],
         },
     },
+    {
+        "name": "background_task",
+        "description": "Spawn a background command that runs asynchronously.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "What this background task does"},
+                "command": {"type": "string", "description": "Shell command to run"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds (default 120)"},
+            },
+            "required": ["description", "command"],
+        },
+    },
+    {
+        "name": "check_background",
+        "description": "Check status of a background task.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID returned by background_task"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "browser",
+        "description": "Automate a headless browser: navigate, screenshot, click, type, evaluate JS, get text.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": (
+                        "Action: navigate, screenshot, click, type, evaluate, "
+                        "get_text, accessibility_snapshot, close"
+                    ),
+                },
+                "url": {"type": "string", "description": "URL for navigate action"},
+                "selector": {"type": "string", "description": "CSS selector for click/type/get_text"},
+                "text": {"type": "string", "description": "Text for type action"},
+                "script": {"type": "string", "description": "JavaScript for evaluate action"},
+                "path": {"type": "string", "description": "File path for screenshot save"},
+                "session_id": {"type": "string", "description": "Browser session ID (default: 'default')"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "visual_verify",
+        "description": "Navigate to URL, screenshot, and verify page matches expected description.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to verify"},
+                "expected": {
+                    "type": "string",
+                    "description": "Expected description of what the page should show",
+                },
+                "session_id": {"type": "string", "description": "Browser session ID"},
+            },
+            "required": ["url", "expected"],
+        },
+    },
 ]
 
 PLANNER_TOOL_SCHEMAS = [
@@ -253,6 +320,18 @@ PLANNER_TOOL_SCHEMAS = [
                 "task": {"type": "string", "description": "Instructions for the worker"},
             },
             "required": ["task_id", "task"],
+        },
+    },
+    {
+        "name": "spawn_sub_planner",
+        "description": "Spawn a sub-planner for scoped planning.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "description": "Scope identifier for sub-planner"},
+                "task": {"type": "string", "description": "Instructions for the sub-planner"},
+            },
+            "required": ["scope", "task"],
         },
     },
     {
@@ -364,10 +443,15 @@ class HarnessRunner:
 
         self._tasks: dict[str, Task] = {}
         self._workers: dict[str, Worker] = {}
+        self._sub_planners: dict[str, SubPlanner] = {}
         self._async_tasks: dict[str, asyncio.Task] = {}
+        self._sub_async_tasks: dict[str, asyncio.Task] = {}
         self._handoffs: dict[str, dict] = {}
         self._base_snapshots: dict[str, dict[str, str]] = {}
         self._prompt_texts = self._load_prompts()
+        self._agents_md_content: str = ""
+        self._skill_loader: SkillLoader = SkillLoader()
+        self._hook_registry: HookRegistry = HookRegistry()
 
     def _load_prompt_file(self, filename: str, fallback: str) -> str:
         prompt_path = Path(__file__).resolve().parent / "prompts" / filename
@@ -412,14 +496,26 @@ class HarnessRunner:
         except Exception:
             pass
 
-    def _make_client(self) -> _ClientProxy:
+    def _make_client(self, model: str | None = None) -> _ClientProxy:
         import anthropic
 
         kwargs: dict[str, Any] = {"api_key": self.config.llm.api_key}
         if self.config.llm.base_url:
             kwargs["base_url"] = self.config.llm.base_url
         real_client = anthropic.AsyncAnthropic(**kwargs)
-        return _ClientProxy(real_client, self.config.llm.model, self.config.llm.max_tokens)
+        return _ClientProxy(real_client, model or self.config.llm.model, self.config.llm.max_tokens)
+
+    def _get_model_for_role(self, role: str) -> str:
+        models = self.config.models
+        if role == "root_planner" and models.plan:
+            return models.plan
+        if role == "sub_planner" and models.plan:
+            return models.plan
+        if role == "worker":
+            return models.default
+        if role == "fixer" and models.slow:
+            return models.slow
+        return models.default
 
     def _handle_create_task(self, task_id: str, description: str, blocked_by: list[str] | None = None) -> dict:
         task = Task(id=task_id, title=task_id, description=description, blocked_by=blocked_by or [])
@@ -442,7 +538,7 @@ class HarnessRunner:
 
             self._base_snapshots[task_id] = await asyncio.to_thread(snapshot_workspace, repo)
 
-        client = self._make_client()
+        client = self._make_client(model=self._get_model_for_role("worker"))
         worker_config = AgentConfig(
             agent_id=worker_id,
             role=AgentRole.WORKER,
@@ -455,16 +551,15 @@ class HarnessRunner:
         workspace_root = self.config.workspace.root_dir
         worker_tool_handlers = self._make_worker_tool_handlers(workspace_root, worker_id)
 
+        task_desc = task or (stored_task.description if stored_task else task_id)
+
         worker = Worker(
             client=client,
             config=worker_config,
             tool_handlers=worker_tool_handlers,
             tool_schemas=WORKER_TOOL_SCHEMAS,
             event_bus=self.event_bus,
-            system_prompt=(
-                f"{self._prompt_texts['worker']}\n\n"
-                f"Task: {task or (stored_task.description if stored_task else task_id)}"
-            ),
+            system_prompt=(f"{self._prompt_texts['worker']}\n\nTask: {task_desc}"),
             workspace_root=workspace_root,
             scratchpad=Scratchpad(),
             watchdog=self.watchdog,
@@ -475,12 +570,22 @@ class HarnessRunner:
         worker._pivot_threshold = self.config.freshness.pivot_threshold
         worker._hard_stop_threshold = self.config.freshness.hard_stop_threshold
 
+        if self._agents_md_content:
+            worker._agents_md = self._agents_md_content
+
+        matched_skills = self._skill_loader.match_task(task_desc)
+        if matched_skills:
+            skill_content = "\n\n".join(f"# Skill: {s.name}\n{s.content}" for s in matched_skills)
+            worker._skill_content = skill_content
+
+        await self._hook_registry.fire("worker_spawn", worker_id=worker_id, task=task_desc)
+
         self._workers[task_id] = worker
 
         async def _run_worker() -> None:
             try:
                 await worker.setup_workspace()
-                await worker.run(f"Execute task: {task or (stored_task.description if stored_task else task_id)}")
+                await worker.run(f"Execute task: {task_desc}")
             except Exception as exc:
                 self._handoffs[task_id] = {
                     "worker_id": worker_id,
@@ -499,6 +604,41 @@ class HarnessRunner:
         await self.event_bus.emit(WorkerSpawned(agent_id=worker_id, task_id=task_id))
 
         return {"status": "spawned", "worker_id": worker_id, "task_id": task_id}
+
+    async def _handle_spawn_sub_planner(self, scope: str, task: str = "") -> dict:
+        if scope in self._sub_planners:
+            return {"error": f"Sub-planner already spawned for scope: {scope}"}
+
+        planner_id = f"sub-planner-{scope}-{uuid.uuid4().hex[:6]}"
+        client = self._make_client(model=self._get_model_for_role("sub_planner"))
+        planner_config = AgentConfig(
+            agent_id=planner_id,
+            role=AgentRole.SUB_PLANNER,
+            depth=1,
+            parent_id="root-planner",
+            token_budget=200_000,
+            timeout_seconds=600,
+        )
+
+        sub_planner = SubPlanner(
+            client=client,
+            config=planner_config,
+            tool_handlers=self._build_planner_handlers(),
+            tool_schemas=PLANNER_TOOL_SCHEMAS,
+            event_bus=self.event_bus,
+            system_prompt=self._prompt_texts["sub_planner"],
+            max_depth=self.config.agents.max_depth,
+        )
+
+        async def _run_sub_planner() -> None:
+            try:
+                await sub_planner.run(task)
+            except Exception:
+                pass
+
+        self._sub_planners[scope] = sub_planner
+        self._sub_async_tasks[scope] = asyncio.create_task(_run_sub_planner(), name=planner_id)
+        return {"status": "spawned", "planner_id": planner_id, "scope": scope}
 
     async def _handle_review_handoff(self, handoff_id: str) -> dict:
         atask = self._async_tasks.get(handoff_id)
@@ -620,7 +760,7 @@ class HarnessRunner:
 
     def _make_worker_tool_handlers(self, workspace_root: str, worker_id: str) -> dict:
         workspace_path = f"{workspace_root}/{worker_id}"
-        return {
+        handlers = {
             "bash": partial(bash_handler, workspace_path=workspace_path),
             "read_file": partial(read_file_handler, workspace_path=workspace_path),
             "write_file": partial(write_file_handler, workspace_path=workspace_path),
@@ -629,13 +769,39 @@ class HarnessRunner:
             "find_files": partial(find_files_handler, workspace_path=workspace_path),
             "todo_write": partial(todo_write_handler, workspace_path=workspace_path),
             "ask": partial(ask_handler, workspace_path=workspace_path),
+            "background_task": partial(background_task_handler, workspace_path=workspace_path),
+            "check_background": partial(check_background_handler, workspace_path=workspace_path),
             "submit_handoff": submit_handoff_handler,
         }
+        if self.config.browser.enabled:
+            handlers["browser"] = partial(browser_handler, workspace_path=workspace_path)
+            handlers["visual_verify"] = partial(visual_verify_handler, workspace_path=workspace_path)
+        return handlers
+
+    def _make_fixer_tool_handlers(self, repo: str) -> dict:
+        handlers = {
+            "bash": partial(bash_handler, workspace_path=repo),
+            "read_file": partial(read_file_handler, workspace_path=repo),
+            "write_file": partial(write_file_handler, workspace_path=repo),
+            "edit_file": partial(edit_file_handler, workspace_path=repo),
+            "grep": partial(grep_handler, workspace_path=repo),
+            "find_files": partial(find_files_handler, workspace_path=repo),
+            "todo_write": partial(todo_write_handler, workspace_path=repo),
+            "ask": partial(ask_handler, workspace_path=repo),
+            "background_task": partial(background_task_handler, workspace_path=repo),
+            "check_background": partial(check_background_handler, workspace_path=repo),
+            "submit_handoff": submit_handoff_handler,
+        }
+        if self.config.browser.enabled:
+            handlers["browser"] = partial(browser_handler, workspace_path=repo)
+            handlers["visual_verify"] = partial(visual_verify_handler, workspace_path=repo)
+        return handlers
 
     def _build_planner_handlers(self) -> dict[str, Any]:
         return {
             "create_task": self._handle_create_task,
             "spawn_worker": self._handle_spawn_worker,
+            "spawn_sub_planner": self._handle_spawn_sub_planner,
             "review_handoff": self._handle_review_handoff,
             "accept_handoff": self._handle_accept_handoff,
             "reject_handoff": self._handle_reject_handoff,
@@ -655,7 +821,7 @@ class HarnessRunner:
             fixer_id = f"fixer-{uuid.uuid4().hex[:8]}"
             failure_summary = "\n".join(failures[:20])
 
-            client = self._make_client()
+            client = self._make_client(model=self._get_model_for_role("fixer"))
             fixer_config = AgentConfig(
                 agent_id=fixer_id,
                 role=AgentRole.WORKER,
@@ -665,17 +831,7 @@ class HarnessRunner:
                 timeout_seconds=self.config.agents.worker_timeout_seconds,
             )
 
-            tool_handlers = {
-                "bash": partial(bash_handler, workspace_path=repo),
-                "read_file": partial(read_file_handler, workspace_path=repo),
-                "write_file": partial(write_file_handler, workspace_path=repo),
-                "edit_file": partial(edit_file_handler, workspace_path=repo),
-                "grep": partial(grep_handler, workspace_path=repo),
-                "find_files": partial(find_files_handler, workspace_path=repo),
-                "todo_write": partial(todo_write_handler, workspace_path=repo),
-                "ask": partial(ask_handler, workspace_path=repo),
-                "submit_handoff": submit_handoff_handler,
-            }
+            tool_handlers = self._make_fixer_tool_handlers(repo)
 
             fixer = Worker(
                 client=client,
@@ -721,7 +877,14 @@ class HarnessRunner:
         self.shutdown_handler.register()
         self.shutdown_handler.add_callback(self._on_shutdown)
 
-        client = self._make_client()
+        workspace_root = self.config.workspace.canonical_dir
+        self._agents_md_content = load_agents_md(workspace_root)
+        skills = discover_skills(workspace_root)
+        self._skill_loader = SkillLoader(skills)
+        await self._hook_registry.fire("session_start")
+
+        planner_model = self._get_model_for_role("root_planner")
+        client = self._make_client(model=planner_model)
 
         planner_config = AgentConfig(
             agent_id=f"root-planner-{uuid.uuid4().hex[:8]}",
@@ -748,7 +911,7 @@ class HarnessRunner:
         planner._hard_stop_threshold = self.config.freshness.hard_stop_threshold
 
         self.renderer.console.print("[bold]Harness started[/]")
-        self.renderer.console.print(f"[dim]Model: {self.config.llm.model}[/]")
+        self.renderer.console.print(f"[dim]Model: {planner_model}[/]")
         self.renderer.console.print(f"[dim]Instructions: {instructions}[/]")
         self.renderer.console.print()
 
@@ -776,10 +939,19 @@ class HarnessRunner:
                 except (asyncio.TimeoutError, Exception):
                     pass
 
+        for atask in self._sub_async_tasks.values():
+            if not atask.done():
+                try:
+                    await asyncio.wait_for(atask, timeout=60)
+                except (asyncio.TimeoutError, Exception):
+                    pass
+
         if self.config.workspace.cleanup_on_success:
             for worker in self._workers.values():
                 worker.cleanup()
         self._prune_workspaces()
+
+        await self._hook_registry.fire("session_end")
 
         self.renderer.console.print()
         self.renderer.console.print("[bold]Harness complete[/]")

@@ -9,6 +9,7 @@ from harness.models.merge import (
     ReconciliationRound,
 )
 from harness.models.scratchpad import ScratchpadSchema
+from harness.models.skill import SkillDefinition
 from harness.models.state import (
     ErrorBudgetSnapshot,
     StateSnapshot,
@@ -42,6 +43,7 @@ __all__ = [
     "ReconciliationReport",
     "ReconciliationRound",
     "ScratchpadSchema",
+    "SkillDefinition",
     "StateSnapshot",
     "Task",
     "TaskBoardSnapshot",
