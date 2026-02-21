@@ -175,17 +175,24 @@ Layer 6:   End-to-end (real LLM)
 - [x] UV migration (pyproject.toml, uv.lock)
 - [x] CI workflow (web/ typecheck + vitest + build)
 
-- [x] `src/harness/` package implementation (27 source files: models, planner, worker, watchdog, cli, events, tools, git, orchestration)
+- [x] `src/harness/` package implementation (30+ source files: models, planner, worker, watchdog, cli, events, tools, git, orchestration)
 - [x] Instructor library integration (structured.py stub + pyproject.toml dependency)
 - [x] Event bus + Rich CLI renderer (events.py + rendering.py + pyproject.toml dependency)
 - [x] Python test suite (tests/python/ -- 194 tests across 18 files, layers 0-5.6)
 - [x] Layer 3.5 Structured Output test section in testing-strategy.md
 - [x] Graceful shutdown (signal handler + checkpoint + resume -- orchestration/shutdown.py)
+- [x] Coherence appendix document (docs/architecture/coherence-appendix.md)
+- [x] 3-way merge conflict detection wired into accept_handoff (base snapshots per worker)
+- [x] SIGINT checkpoint fix (ErrorBudget attribute names, try/except in signal handler)
+- [x] Watchdog activity recording in workers
+- [x] Context compression trigger in base agent
+- [x] Post-run reconciliation with configurable test_command
+- [x] Live tier testing (Tiers 1-10) against MiniMax API -- all passing
 
 ### Not Started
 
-- [ ] Coherence appendix document (cross-session mechanism evolution)
 - [ ] Workspace cleanup with configurable retain
+- [ ] Wire spawn_fixer_fn for auto-fix in reconciliation
 
 ---
 

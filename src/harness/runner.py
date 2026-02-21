@@ -256,25 +256,36 @@ class HarnessRunner:
         self._workers: dict[str, Worker] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._handoffs: dict[str, dict] = {}
+        self._base_snapshots: dict[str, dict[str, str]] = {}
 
     def _on_shutdown(self) -> None:
-        from harness.orchestration.shutdown import HarnessCheckpoint, checkpoint
+        try:
+            from harness.orchestration.shutdown import HarnessCheckpoint, checkpoint
 
-        state = HarnessCheckpoint(
-            task_states={task_id: task.status.value for task_id, task in self._tasks.items()},
-            worker_states={
-                task_id: "running" if (self._threads.get(task_id) and self._threads[task_id].is_alive()) else "stopped"
-                for task_id in self._workers
-            },
-            error_budget_snapshot={
-                "failures": self.error_budget.failures,
-                "total": self.error_budget.total,
-                "zone": self.error_budget.zone.value,
-            },
-            scratchpad_content={"planner": self.scratchpad.read("planner") or ""},
-            metadata={"config_model": self.config.llm.model},
-        )
-        checkpoint(state, ".harness-checkpoint.json")
+            state = HarnessCheckpoint(
+                task_states={task_id: task.status.value for task_id, task in self._tasks.items()},
+                worker_states={
+                    task_id: "running"
+                    if (self._threads.get(task_id) and self._threads[task_id].is_alive())
+                    else "stopped"
+                    for task_id in self._workers
+                },
+                error_budget_snapshot={
+                    "failures": self.error_budget.failed_tasks,
+                    "total": self.error_budget.total_tasks,
+                    "zone": self.error_budget.zone.value,
+                },
+                scratchpad_content={"planner": self.scratchpad.read("planner") or ""},
+                metadata={"config_model": self.config.llm.model},
+            )
+            checkpoint_path = ".harness-checkpoint.json"
+            if self.config.repos:
+                import os
+
+                checkpoint_path = os.path.join(self.config.repos[0], ".harness-checkpoint.json")
+            checkpoint(state, checkpoint_path)
+        except Exception:
+            pass
 
     def _make_client(self) -> _ClientProxy:
         import anthropic
@@ -301,6 +312,10 @@ class HarnessRunner:
 
         worker_id = f"worker-{task_id}"
         repo = self.config.repos[0] if self.config.repos else None
+        if repo:
+            from harness.git.workspace import snapshot_workspace
+
+            self._base_snapshots[task_id] = snapshot_workspace(repo)
 
         client = self._make_client()
         worker_config = AgentConfig(
@@ -382,20 +397,35 @@ class HarnessRunner:
             return {"status": "worker_still_running", "handoff_id": handoff_id}
         return {"status": "no_handoff_found", "handoff_id": handoff_id}
 
-    def _apply_diffs_to_canonical(self, handoff: dict) -> list[str]:
+    def _apply_diffs_to_canonical(self, handoff: dict, task_id: str = "") -> list[str]:
         import os
 
         diffs = handoff.get("diffs", [])
         repo = self.config.repos[0] if self.config.repos else None
         if not repo or not diffs:
             return []
+
+        base_snapshot = self._base_snapshots.get(task_id, {})
         applied: list[str] = []
+        conflicts: list[str] = []
+
         for diff in diffs:
             rel_path = diff.get("path", "")
             after = diff.get("after")
             if not rel_path:
                 continue
+
             full_path = os.path.join(repo, rel_path)
+            base_content = base_snapshot.get(rel_path)
+
+            current_content = None
+            if os.path.exists(full_path):
+                with open(full_path, "r") as f:
+                    current_content = f.read()
+
+            if base_content is not None and current_content != base_content and after is not None:
+                conflicts.append(rel_path)
+
             if after is None:
                 if os.path.exists(full_path):
                     os.remove(full_path)
@@ -405,6 +435,10 @@ class HarnessRunner:
                 with open(full_path, "w") as f:
                     f.write(after)
                 applied.append(f"wrote {rel_path}")
+
+        if conflicts:
+            applied.append(f"CONFLICTS (overwritten): {', '.join(conflicts)}")
+
         return applied
 
     def _handle_accept_handoff(self, handoff_id: str) -> dict:
@@ -413,7 +447,8 @@ class HarnessRunner:
             task.status = TaskStatus.COMPLETED
             self.error_budget.record(success=True)
         handoff = self._handoffs.get(handoff_id, {})
-        applied = self._apply_diffs_to_canonical(handoff)
+        applied = self._apply_diffs_to_canonical(handoff, task_id=handoff_id)
+        self._base_snapshots.pop(handoff_id, None)
         worker = self._workers.get(handoff_id)
         if worker and self.config.workspace.cleanup_on_success:
             worker.cleanup()
@@ -448,9 +483,9 @@ class HarnessRunner:
         return {
             "status": "ok",
             "zone": self.error_budget.zone.value,
-            "failures": self.error_budget.failures,
-            "total": self.error_budget.total,
-            "threshold": self.error_budget.threshold,
+            "failures": self.error_budget.failed_tasks,
+            "total": self.error_budget.total_tasks,
+            "threshold": self.error_budget.budget_percentage,
         }
 
     def _make_worker_tool_handlers(self, workspace_root: str, worker_id: str) -> dict:

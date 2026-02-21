@@ -50,4 +50,7 @@ class ShutdownHandler:
     def request_shutdown(self) -> None:
         self._shutdown_requested = True
         for callback in list(self._callbacks):
-            callback()
+            try:
+                callback()
+            except Exception:
+                pass
