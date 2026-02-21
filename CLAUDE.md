@@ -2,7 +2,7 @@
 
 This is a progressive learning repository that teaches how to build AI agents from scratch across 20 sessions (s01-s20). Sessions s01-s11 cover fundamentals (agent loop through autonomous teams). Sessions s12-s20 implement a multi-agent orchestration harness based on Cursor's "self-driving codebases" research.
 
-The next major milestone is implementing the `harness` Python package in `src/harness/`.
+The `harness` Python package in `src/harness/` is fully implemented with asyncio concurrency and PyO3/Rust acceleration.
 
 ---
 
@@ -11,7 +11,8 @@ The next major milestone is implementing the `harness` Python package in `src/ha
 ```
 learn-claude-code/
 ├── agents/                     # Python reference implementations (s01-s20 + s_full.py)
-├── src/harness/                # Production-style harness package (stub, to be built)
+├── src/harness/                # Production-style harness package (asyncio, 30+ files)
+├── src/harness_core/           # PyO3/Rust acceleration crate (maturin, walkdir, rayon, md-5)
 ├── web/                        # Next.js interactive learning platform (TypeScript)
 │   ├── src/agents/             #   TypeScript agent implementations (s01-s20)
 │   └── tests/agents/           #   Vitest tests for TS agents
@@ -192,6 +193,11 @@ Layer 6:   End-to-end (real LLM)
 - [x] Workspace cleanup with configurable retain (always prune at end of run)
 - [x] Wire spawn_fixer_fn for auto-fix in reconciliation
 
+- [x] Asyncio migration: all I/O and orchestration converted from threading to asyncio
+- [x] PyO3/Rust acceleration: harness_core crate with snapshot_workspace (walkdir+rayon) and compute_diff (md-5+rayon)
+- [x] UV workspace setup with maturin build for Rust crate
+- [x] Try-import fallback pattern (HAS_RUST flag, pure-Python fallback when Rust unavailable)
+
 ---
 
 ## Conventions
@@ -209,6 +215,7 @@ Layer 6:   End-to-end (real LLM)
 ## Tech Stack
 
 - Python 3.10+, UV, pydantic v2, pydantic-settings, anthropic SDK, instructor (planned)
+- Rust (PyO3 0.28, maturin, walkdir, rayon, md-5) -- optional acceleration
 - TypeScript, Next.js, Vitest
 - Rich (planned, for CLI output)
 - Git (real git operations for workspace isolation and merge)
