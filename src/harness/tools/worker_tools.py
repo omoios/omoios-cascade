@@ -1,9 +1,9 @@
+import asyncio
 import os
-import subprocess
 from typing import Any
 
 
-def bash_handler(command: str, workspace_path: str, timeout: int = 30) -> dict[str, Any]:
+async def bash_handler(command: str, workspace_path: str, timeout: int = 30) -> dict[str, Any]:
     dangerous = ["rm -rf /", "mkfs", "dd if=", "format", "> /dev/"]
     cmd_check = command.strip()
     if any(d in cmd_check for d in dangerous):
@@ -11,25 +11,26 @@ def bash_handler(command: str, workspace_path: str, timeout: int = 30) -> dict[s
     if cmd_check.startswith("rm -rf"):
         return {"stdout": "", "stderr": "Dangerous command blocked", "exit_code": -1}
 
+    proc = await asyncio.create_subprocess_shell(
+        command,
+        cwd=workspace_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
     try:
-        r = subprocess.run(
-            command,
-            shell=True,
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return {
-            "stdout": r.stdout,
-            "stderr": r.stderr,
-            "exit_code": r.returncode,
+            "stdout": stdout_bytes.decode() if stdout_bytes else "",
+            "stderr": stderr_bytes.decode() if stderr_bytes else "",
+            "exit_code": proc.returncode,
         }
-    except subprocess.TimeoutExpired:
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
         return {"stdout": "", "stderr": "Command timed out", "exit_code": -1}
 
 
-def read_file_handler(path: str, workspace_path: str, offset: int = 0, limit: int = 2000) -> dict[str, Any]:
+async def read_file_handler(path: str, workspace_path: str, offset: int = 0, limit: int = 2000) -> dict[str, Any]:
     full_path = os.path.join(workspace_path, path)
     resolved = os.path.realpath(full_path)
     if not resolved.startswith(os.path.realpath(workspace_path)):
@@ -54,7 +55,7 @@ def read_file_handler(path: str, workspace_path: str, offset: int = 0, limit: in
         return {"error": str(e)}
 
 
-def write_file_handler(path: str, content: str, workspace_path: str) -> dict[str, Any]:
+async def write_file_handler(path: str, content: str, workspace_path: str) -> dict[str, Any]:
     full_path = os.path.join(workspace_path, path)
     resolved = os.path.realpath(full_path)
     if not resolved.startswith(os.path.realpath(workspace_path)):
@@ -70,7 +71,7 @@ def write_file_handler(path: str, content: str, workspace_path: str) -> dict[str
         return {"error": str(e)}
 
 
-def edit_file_handler(path: str, old_string: str, new_string: str, workspace_path: str) -> dict[str, Any]:
+async def edit_file_handler(path: str, old_string: str, new_string: str, workspace_path: str) -> dict[str, Any]:
     full_path = os.path.join(workspace_path, path)
     resolved = os.path.realpath(full_path)
     if not resolved.startswith(os.path.realpath(workspace_path)):
@@ -95,7 +96,7 @@ def edit_file_handler(path: str, old_string: str, new_string: str, workspace_pat
         return {"error": str(e)}
 
 
-def submit_handoff_handler(
+async def submit_handoff_handler(
     agent_id: str,
     task_id: str,
     status: str,

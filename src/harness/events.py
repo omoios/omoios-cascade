@@ -1,6 +1,7 @@
-import threading
+import asyncio
+import inspect
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
@@ -59,24 +60,25 @@ class PlannerDecision(HarnessEvent):
 
 class EventBus:
     def __init__(self):
-        self._subscribers: dict[str, list[Callable[[HarnessEvent], None]]] = {}
+        self._subscribers: dict[str, list[Callable[[HarnessEvent], Any]]] = {}
         self._history: list[HarnessEvent] = []
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()
 
-    def subscribe(self, event_type: str, callback: Callable[[HarnessEvent], None]) -> None:
-        with self._lock:
-            if event_type not in self._subscribers:
-                self._subscribers[event_type] = []
-            self._subscribers[event_type].append(callback)
+    def subscribe(self, event_type: str, callback: Callable[[HarnessEvent], Any]) -> None:
+        if event_type not in self._subscribers:
+            self._subscribers[event_type] = []
+        self._subscribers[event_type].append(callback)
 
-    def emit(self, event: HarnessEvent) -> None:
-        with self._lock:
+    async def emit(self, event: HarnessEvent) -> None:
+        async with self._lock:
             self._history.append(event)
             callbacks = self._subscribers.get(event.event_type, [])
         for callback in callbacks:
-            callback(event)
+            if inspect.iscoroutinefunction(callback):
+                await callback(event)
+            else:
+                callback(event)
 
     @property
     def history(self) -> list[HarnessEvent]:
-        with self._lock:
-            return list(self._history)
+        return list(self._history)

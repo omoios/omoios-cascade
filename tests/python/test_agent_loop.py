@@ -1,4 +1,6 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from harness.agents.base import BaseAgent
 from harness.models.agent import AgentConfig, AgentRole
@@ -55,21 +57,21 @@ def make_agent(
     )
 
 
-def test_loop_exits_on_end_turn():
-    client = MagicMock()
-    client.messages.create.side_effect = [
-        make_mock_response([make_text_block("done")], stop_reason="end_turn")
-    ]
+@pytest.mark.asyncio
+async def test_loop_exits_on_end_turn():
+    client = AsyncMock()
+    client.messages.create.side_effect = [make_mock_response([make_text_block("done")], stop_reason="end_turn")]
 
     agent = make_agent(client)
-    result = agent.run("start")
+    result = await agent.run("start")
 
     assert result == "done"
     assert client.messages.create.call_count == 1
 
 
-def test_loop_executes_tool_and_continues():
-    client = MagicMock()
+@pytest.mark.asyncio
+async def test_loop_executes_tool_and_continues():
+    client = AsyncMock()
     client.messages.create.side_effect = [
         make_mock_response(
             [make_tool_use_block("echo_tool", {"value": "x"}, "tu_1")],
@@ -82,14 +84,15 @@ def test_loop_executes_tool_and_continues():
         return {"output": "echoed", "value": value}
 
     agent = make_agent(client, tool_handlers={"echo_tool": echo_tool})
-    result = agent.run("start")
+    result = await agent.run("start")
 
     assert result == "final response"
     assert client.messages.create.call_count == 2
 
 
-def test_token_budget_enforcement():
-    client = MagicMock()
+@pytest.mark.asyncio
+async def test_token_budget_enforcement():
+    client = AsyncMock()
     client.messages.create.side_effect = [
         make_mock_response(
             [make_tool_use_block("echo_tool", {"value": "x"}, "tu_1")],
@@ -109,15 +112,16 @@ def test_token_budget_enforcement():
         return {"output": value}
 
     agent = make_agent(client, tool_handlers={"echo_tool": echo_tool}, token_budget=200)
-    result = agent.run("start")
+    result = await agent.run("start")
 
     assert result == ""
     assert agent.total_tokens == 300
     assert client.messages.create.call_count == 2
 
 
-def test_timeout_enforcement():
-    client = MagicMock()
+@pytest.mark.asyncio
+async def test_timeout_enforcement():
+    client = AsyncMock()
     client.messages.create.side_effect = [
         make_mock_response(
             [make_tool_use_block("echo_tool", {"value": "x"})],
@@ -129,14 +133,15 @@ def test_timeout_enforcement():
         return {"output": value}
 
     agent = make_agent(client, tool_handlers={"echo_tool": echo_tool}, timeout_seconds=0)
-    result = agent.run("start")
+    result = await agent.run("start")
 
     assert result == ""
     assert client.messages.create.call_count == 1
 
 
-def test_tool_results_in_messages():
-    client = MagicMock()
+@pytest.mark.asyncio
+async def test_tool_results_in_messages():
+    client = AsyncMock()
     client.messages.create.side_effect = [
         make_mock_response(
             [make_tool_use_block("echo_tool", {"value": "abc"}, "tu_9")],
@@ -149,7 +154,7 @@ def test_tool_results_in_messages():
         return {"output": "echoed"}
 
     agent = make_agent(client, tool_handlers={"echo_tool": echo_tool})
-    agent.run("start")
+    await agent.run("start")
 
     tool_result_message = agent.messages[2]
     assert tool_result_message["role"] == "user"
@@ -158,8 +163,9 @@ def test_tool_results_in_messages():
     assert '"output": "echoed"' in tool_result_message["content"][0]["content"]
 
 
-def test_unknown_tool_returns_error():
-    client = MagicMock()
+@pytest.mark.asyncio
+async def test_unknown_tool_returns_error():
+    client = AsyncMock()
     client.messages.create.side_effect = [
         make_mock_response(
             [make_tool_use_block("nonexistent_tool", {"arg": "x"}, "tu_5")],
@@ -169,14 +175,15 @@ def test_unknown_tool_returns_error():
     ]
 
     agent = make_agent(client)
-    agent.run("start")
+    await agent.run("start")
 
     tool_result_message = agent.messages[2]
     assert "Unknown tool: nonexistent_tool" in tool_result_message["content"][0]["content"]
 
 
-def test_messages_alternate_user_assistant_roles():
-    client = MagicMock()
+@pytest.mark.asyncio
+async def test_messages_alternate_user_assistant_roles():
+    client = AsyncMock()
     client.messages.create.side_effect = [
         make_mock_response(
             [make_tool_use_block("echo_tool", {"value": "x"}, "tu_1")],
@@ -189,7 +196,7 @@ def test_messages_alternate_user_assistant_roles():
         return {"output": value}
 
     agent = make_agent(client, tool_handlers={"echo_tool": echo_tool})
-    agent.run("start")
+    await agent.run("start")
 
     roles = [message["role"] for message in agent.messages]
     assert roles == ["user", "assistant", "user", "assistant"]

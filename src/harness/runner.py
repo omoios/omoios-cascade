@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import threading
+import asyncio
 import uuid
 from functools import partial
 from typing import Any, Callable
@@ -232,10 +232,10 @@ class _MessagesProxy:
         self._model = model
         self._max_tokens = max_tokens
 
-    def create(self, **kwargs: Any) -> Any:
+    async def create(self, **kwargs: Any) -> Any:
         kwargs["model"] = self._model
         kwargs["max_tokens"] = self._max_tokens
-        return self._client.messages.create(**kwargs)
+        return await self._client.messages.create(**kwargs)
 
 
 class HarnessRunner:
@@ -254,7 +254,7 @@ class HarnessRunner:
 
         self._tasks: dict[str, Task] = {}
         self._workers: dict[str, Worker] = {}
-        self._threads: dict[str, threading.Thread] = {}
+        self._async_tasks: dict[str, asyncio.Task] = {}
         self._handoffs: dict[str, dict] = {}
         self._base_snapshots: dict[str, dict[str, str]] = {}
 
@@ -266,7 +266,7 @@ class HarnessRunner:
                 task_states={task_id: task.status.value for task_id, task in self._tasks.items()},
                 worker_states={
                     task_id: "running"
-                    if (self._threads.get(task_id) and self._threads[task_id].is_alive())
+                    if (self._async_tasks.get(task_id) and not self._async_tasks[task_id].done())
                     else "stopped"
                     for task_id in self._workers
                 },
@@ -293,7 +293,7 @@ class HarnessRunner:
         kwargs: dict[str, Any] = {"api_key": self.config.llm.api_key}
         if self.config.llm.base_url:
             kwargs["base_url"] = self.config.llm.base_url
-        real_client = anthropic.Anthropic(**kwargs)
+        real_client = anthropic.AsyncAnthropic(**kwargs)
         return _ClientProxy(real_client, self.config.llm.model, self.config.llm.max_tokens)
 
     def _handle_create_task(self, task_id: str, description: str, blocked_by: list[str] | None = None) -> dict:
@@ -301,7 +301,7 @@ class HarnessRunner:
         self._tasks[task_id] = task
         return {"status": "created", "task_id": task_id, "description": description}
 
-    def _handle_spawn_worker(self, task_id: str, task: str = "") -> dict:
+    async def _handle_spawn_worker(self, task_id: str, task: str = "") -> dict:
         if task_id in self._workers:
             return {"error": f"Worker already spawned for task: {task_id}"}
 
@@ -315,7 +315,7 @@ class HarnessRunner:
         if repo:
             from harness.git.workspace import snapshot_workspace
 
-            self._base_snapshots[task_id] = snapshot_workspace(repo)
+            self._base_snapshots[task_id] = await asyncio.to_thread(snapshot_workspace, repo)
 
         client = self._make_client()
         worker_config = AgentConfig(
@@ -349,10 +349,10 @@ class HarnessRunner:
 
         self._workers[task_id] = worker
 
-        def _run_worker() -> None:
+        async def _run_worker() -> None:
             try:
-                worker.setup_workspace()
-                worker.run(f"Execute task: {task or (stored_task.description if stored_task else task_id)}")
+                await worker.setup_workspace()
+                await worker.run(f"Execute task: {task or (stored_task.description if stored_task else task_id)}")
             except Exception as exc:
                 self._handoffs[task_id] = {
                     "worker_id": worker_id,
@@ -365,24 +365,26 @@ class HarnessRunner:
                 if worker.handoff:
                     self._handoffs[task_id] = worker.handoff
 
-        thread = threading.Thread(target=_run_worker, name=worker_id, daemon=True)
-        self._threads[task_id] = thread
-        thread.start()
+        async_task = asyncio.create_task(_run_worker(), name=worker_id)
+        self._async_tasks[task_id] = async_task
 
-        self.event_bus.emit(WorkerSpawned(agent_id=worker_id, task_id=task_id))
+        await self.event_bus.emit(WorkerSpawned(agent_id=worker_id, task_id=task_id))
 
         return {"status": "spawned", "worker_id": worker_id, "task_id": task_id}
 
-    def _handle_review_handoff(self, handoff_id: str) -> dict:
-        thread = self._threads.get(handoff_id)
-        if thread and thread.is_alive():
-            thread.join(timeout=30)
+    async def _handle_review_handoff(self, handoff_id: str) -> dict:
+        atask = self._async_tasks.get(handoff_id)
+        if atask and not atask.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(atask), timeout=30)
+            except (asyncio.TimeoutError, Exception):
+                pass
 
-        alerts = self.watchdog.check_agents()
+        alerts = await self.watchdog.check_agents()
 
         handoff = self._handoffs.get(handoff_id)
         if handoff:
-            result = {"status": "ready", "handoff": handoff}
+            result: dict[str, Any] = {"status": "ready", "handoff": handoff}
             if alerts:
                 result["watchdog_alerts"] = [
                     {
@@ -393,7 +395,7 @@ class HarnessRunner:
                     for alert in alerts
                 ]
             return result
-        if thread and thread.is_alive():
+        if atask and not atask.done():
             return {"status": "worker_still_running", "handoff_id": handoff_id}
         return {"status": "no_handoff_found", "handoff_id": handoff_id}
 
@@ -464,7 +466,7 @@ class HarnessRunner:
         if worker:
             worker.cleanup()
         self._workers.pop(handoff_id, None)
-        self._threads.pop(handoff_id, None)
+        self._async_tasks.pop(handoff_id, None)
         self._handoffs.pop(handoff_id, None)
         return {"status": "rejected", "handoff_id": handoff_id, "reason": reason}
 
@@ -510,12 +512,12 @@ class HarnessRunner:
             "get_error_budget": self._handle_get_error_budget,
         }
 
-    def _build_fixer_fn(self) -> Callable[[list[str]], None] | None:
+    def _build_fixer_fn(self) -> Callable[[list[str]], Any] | None:
         repo = self.config.repos[0] if self.config.repos else None
         if not repo:
             return None
 
-        def fixer_fn(failures: list[str]) -> None:
+        async def fixer_fn(failures: list[str]) -> None:
             import os
 
             fixer_id = f"fixer-{uuid.uuid4().hex[:8]}"
@@ -556,7 +558,7 @@ class HarnessRunner:
                 scratchpad=Scratchpad(),
             )
 
-            fixer.run(f"Fix these test failures:\n{failure_summary}")
+            await fixer.run(f"Fix these test failures:\n{failure_summary}")
 
         return fixer_fn
 
@@ -579,7 +581,7 @@ class HarnessRunner:
         for _mtime, path in entries[retain:]:
             shutil.rmtree(path, ignore_errors=True)
 
-    def run(self, instructions: str) -> str:
+    async def run(self, instructions: str) -> str:
         self.shutdown_handler.register()
         self.shutdown_handler.add_callback(self._on_shutdown)
 
@@ -609,13 +611,13 @@ class HarnessRunner:
         self.renderer.console.print(f"[dim]Instructions: {instructions}[/]")
         self.renderer.console.print()
 
-        result = planner.run(instructions)
+        result = await planner.run(instructions)
 
         reconciliation_report = None
         if self.config.test_command and self.config.repos:
             from harness.orchestration.reconcile import reconcile
 
-            reconciliation_report = reconcile(
+            reconciliation_report = await reconcile(
                 repo_path=self.config.repos[0],
                 test_command=self.config.test_command,
                 max_rounds=self.config.errors.max_reconciliation_rounds,
@@ -626,9 +628,12 @@ class HarnessRunner:
                 f"[dim]Rounds: {reconciliation_report.rounds}, Fixes: {reconciliation_report.fixes_attempted}[/]"
             )
 
-        for thread in self._threads.values():
-            if thread.is_alive():
-                thread.join(timeout=60)
+        for atask in self._async_tasks.values():
+            if not atask.done():
+                try:
+                    await asyncio.wait_for(atask, timeout=60)
+                except (asyncio.TimeoutError, Exception):
+                    pass
 
         if self.config.workspace.cleanup_on_success:
             for worker in self._workers.values():
@@ -650,7 +655,7 @@ class HarnessRunner:
         return result
 
 
-def run_harness(
+async def run_harness(
     instructions: str,
     config_path: str | None = None,
     repos: list[str] | None = None,
@@ -668,4 +673,4 @@ def run_harness(
         config.repos = repos
 
     runner = HarnessRunner(config)
-    return runner.run(instructions)
+    return await runner.run(instructions)

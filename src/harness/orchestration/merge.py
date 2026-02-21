@@ -1,3 +1,4 @@
+import asyncio
 import os
 from uuid import uuid4
 
@@ -5,7 +6,7 @@ from harness.git.workspace import snapshot_workspace
 from harness.models import FileDiff, MergeResult, MergeStatus, Task, Workspace
 
 
-def optimistic_merge(
+async def optimistic_merge(
     workspace: Workspace,
     canonical_path: str,
     idempotency_guard=None,
@@ -14,8 +15,8 @@ def optimistic_merge(
     if idempotency_guard and not idempotency_guard.can_merge_handoff(workspace.worker_id):
         return MergeResult(worker_id=workspace.worker_id, status=MergeStatus.NO_CHANGES)
 
-    canonical_snapshot = snapshot_workspace(canonical_path)
-    worker_snapshot = snapshot_workspace(workspace.workspace_path)
+    canonical_snapshot = await asyncio.to_thread(snapshot_workspace, canonical_path)
+    worker_snapshot = await asyncio.to_thread(snapshot_workspace, workspace.workspace_path)
     if base_snapshot is None:
         base_snapshot = dict(canonical_snapshot)
 

@@ -114,7 +114,8 @@ class TestScheduler:
 
 
 class TestWatchdog:
-    def test_detects_zombie_stale_heartbeat(self):
+    @pytest.mark.asyncio
+    async def test_detects_zombie_stale_heartbeat(self):
         watchdog = Watchdog(config=WatchdogConfig(zombie_timeout_seconds=60))
         watchdog.record_activity(
             ActivityEntry(
@@ -124,14 +125,15 @@ class TestWatchdog:
             )
         )
 
-        events = watchdog.check_agents()
+        events = await watchdog.check_agents()
 
         assert len(events) == 1
         assert events[0].failure_mode == FailureMode.ZOMBIE
         assert "No activity for" in events[0].evidence
         assert events[0].action_taken == "kill_requested"
 
-    def test_detects_tunnel_vision_repeated_edits(self):
+    @pytest.mark.asyncio
+    async def test_detects_tunnel_vision_repeated_edits(self):
         watchdog = Watchdog(config=WatchdogConfig(tunnel_vision_threshold=3))
         for _ in range(4):
             watchdog.record_activity(
@@ -142,13 +144,14 @@ class TestWatchdog:
                 )
             )
 
-        events = watchdog.check_agents()
+        events = await watchdog.check_agents()
 
         assert len(events) == 1
         assert events[0].failure_mode == FailureMode.TUNNEL_VISION
         assert events[0].evidence == "File src/harness/core.py touched 4 times"
 
-    def test_detects_token_burn_without_tools(self):
+    @pytest.mark.asyncio
+    async def test_detects_token_burn_without_tools(self):
         watchdog = Watchdog(config=WatchdogConfig(token_burn_threshold=1000))
         watchdog.record_activity(
             ActivityEntry(
@@ -165,13 +168,14 @@ class TestWatchdog:
             )
         )
 
-        events = watchdog.check_agents()
+        events = await watchdog.check_agents()
 
         assert len(events) == 1
         assert events[0].failure_mode == FailureMode.TOKEN_BURN
         assert events[0].evidence == "Used 1300 tokens without tool calls"
 
-    def test_does_not_flag_healthy_worker(self):
+    @pytest.mark.asyncio
+    async def test_does_not_flag_healthy_worker(self):
         watchdog = Watchdog(config=WatchdogConfig())
         watchdog.record_activity(
             ActivityEntry(
@@ -192,11 +196,12 @@ class TestWatchdog:
             )
         )
 
-        events = watchdog.check_agents()
+        events = await watchdog.check_agents()
 
         assert events == []
 
-    def test_respects_configurable_thresholds(self):
+    @pytest.mark.asyncio
+    async def test_respects_configurable_thresholds(self):
         relaxed_watchdog = Watchdog(
             config=WatchdogConfig(zombie_timeout_seconds=200, tunnel_vision_threshold=4)
         )
@@ -237,8 +242,8 @@ class TestWatchdog:
                 )
             )
 
-        relaxed_events = relaxed_watchdog.check_agents()
-        strict_events = strict_watchdog.check_agents()
+        relaxed_events = await relaxed_watchdog.check_agents()
+        strict_events = await strict_watchdog.check_agents()
 
         assert relaxed_events == []
         assert {event.failure_mode for event in strict_events} == {
@@ -246,7 +251,8 @@ class TestWatchdog:
             FailureMode.TUNNEL_VISION,
         }
 
-    def test_emits_watchdog_alert_events(self):
+    @pytest.mark.asyncio
+    async def test_emits_watchdog_alert_events(self):
         event_bus = EventBus()
         watchdog = Watchdog(
             config=WatchdogConfig(zombie_timeout_seconds=60),
@@ -260,7 +266,7 @@ class TestWatchdog:
             )
         )
 
-        watchdog.check_agents()
+        await watchdog.check_agents()
 
         alerts = [event for event in event_bus.history if event.event_type == "watchdog_alert"]
         assert len(alerts) == 1

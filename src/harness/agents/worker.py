@@ -1,3 +1,4 @@
+import asyncio
 import os
 import shutil
 from typing import Any, Callable
@@ -30,22 +31,22 @@ class Worker(BaseAgent):
         self._base_snapshot: dict[str, str] = {}
         self._handoff: dict | None = None
 
-    def setup_workspace(self) -> str:
+    async def setup_workspace(self) -> str:
         workspace_path = os.path.join(self.workspace_root, self.config.agent_id)
         os.makedirs(workspace_path, exist_ok=True)
         self.workspace_path = workspace_path
 
         if self.config.repo:
-            shutil.copytree(self.config.repo, workspace_path, dirs_exist_ok=True)
+            await asyncio.to_thread(shutil.copytree, self.config.repo, workspace_path, dirs_exist_ok=True)
 
-        self._base_snapshot = snapshot_workspace(workspace_path)
+        self._base_snapshot = await asyncio.to_thread(snapshot_workspace, workspace_path)
         return workspace_path
 
-    def get_file_diffs(self) -> list[dict]:
+    async def get_file_diffs(self) -> list[dict]:
         if not self.workspace_path:
             return []
 
-        current_snapshot = snapshot_workspace(self.workspace_path)
+        current_snapshot = await asyncio.to_thread(snapshot_workspace, self.workspace_path)
         diffs: list[dict] = []
         all_paths = set(self._base_snapshot.keys()) | set(current_snapshot.keys())
 
@@ -63,21 +64,21 @@ class Worker(BaseAgent):
 
         return diffs
 
-    def build_handoff(self, status: str = "completed", narrative: str = "") -> dict:
+    async def build_handoff(self, status: str = "completed", narrative: str = "") -> dict:
         return {
             "worker_id": self.config.agent_id,
             "task_id": self.config.task_id,
             "status": status,
             "narrative": narrative,
-            "diffs": self.get_file_diffs(),
+            "diffs": await self.get_file_diffs(),
             "tokens_used": self.total_tokens,
             "turns": self.turn_count,
         }
 
-    def on_loop_exit(self) -> None:
-        self._handoff = self.build_handoff()
+    async def on_loop_exit(self) -> None:
+        self._handoff = await self.build_handoff()
         if self.event_bus:
-            self.event_bus.emit(
+            await self.event_bus.emit(
                 WorkerCompleted(
                     agent_id=self.config.agent_id,
                     task_id=self.config.task_id or "",
@@ -85,7 +86,7 @@ class Worker(BaseAgent):
                 )
             )
 
-    def on_tool_result(self, results: list[dict]) -> None:
+    async def on_tool_result(self, results: list[dict]) -> None:
         if not self.watchdog:
             return
         from harness.models.watchdog import ActivityEntry

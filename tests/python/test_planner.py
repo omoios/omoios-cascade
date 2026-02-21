@@ -1,4 +1,6 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from harness.agents.planner import PlannerGuard, RootPlanner, SubPlanner
 from harness.models.agent import AgentConfig, AgentRole
@@ -88,8 +90,9 @@ class TestRootPlanner:
         worker_id = planner.spawn_worker("t1")
         assert worker_id == "worker-t1"
 
-    def test_planner_loop_bounds_max_turns(self):
-        client = MagicMock()
+    @pytest.mark.asyncio
+    async def test_planner_loop_bounds_max_turns(self):
+        client = AsyncMock()
         client.messages.create.side_effect = [
             make_mock_response(
                 [make_tool_use_block("spawn_worker", {"task_id": "t1"}, "tu_1")],
@@ -102,7 +105,7 @@ class TestRootPlanner:
         ]
         planner = make_root_planner(client, max_planner_turns=1)
 
-        planner.run("start")
+        await planner.run("start")
 
         assert planner.turn_count == 1
         assert client.messages.create.call_count == 1

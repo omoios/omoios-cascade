@@ -1,7 +1,7 @@
+import asyncio
 import hashlib
 import os
 import shutil
-import subprocess
 
 from harness.models.handoff import FileDiff
 from harness.models.workspace import Workspace, WorkspaceState
@@ -9,13 +9,14 @@ from harness.models.workspace import Workspace, WorkspaceState
 IGNORE_PATTERNS = [".git", ".workspaces", ".team", ".tasks", "node_modules", "__pycache__"]
 
 
-def create_workspace(repo_path: str, worker_id: str, workspaces_root: str | None = None) -> Workspace:
+async def create_workspace(repo_path: str, worker_id: str, workspaces_root: str | None = None) -> Workspace:
     if workspaces_root is None:
         workspaces_root = os.path.join(repo_path, ".workspaces")
 
     workspace_path = os.path.join(workspaces_root, worker_id)
 
-    shutil.copytree(
+    await asyncio.to_thread(
+        shutil.copytree,
         repo_path,
         workspace_path,
         ignore=shutil.ignore_patterns(*IGNORE_PATTERNS),
@@ -23,15 +24,17 @@ def create_workspace(repo_path: str, worker_id: str, workspaces_root: str | None
     )
 
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "rev-parse",
+            "HEAD",
             cwd=repo_path,
-            capture_output=True,
-            text=True,
-            check=True,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        base_commit = result.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        stdout, _ = await proc.communicate()
+        base_commit = stdout.decode().strip() if proc.returncode == 0 else "no-git"
+    except (FileNotFoundError, OSError):
         base_commit = "no-git"
 
     return Workspace(

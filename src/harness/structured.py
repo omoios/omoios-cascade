@@ -10,7 +10,7 @@ def patch_client(client: Any) -> Any:
     return instructor.from_anthropic(client)
 
 
-def extract_structured(
+async def extract_structured(
     client: Any,
     model: str,
     response_model: type[T],
@@ -25,4 +25,4 @@ def extract_structured(
     }
     if system:
         kwargs["system"] = system
-    return patched_client.messages.create(**kwargs)
+    return await patched_client.messages.create(**kwargs)

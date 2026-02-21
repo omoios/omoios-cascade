@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import sys
 
 from harness import __version__
@@ -50,10 +51,12 @@ def main(args: list[str] | None = None) -> int:
             return 1
 
         try:
-            result = run_harness(
-                instructions=parsed.instructions,
-                config_path=parsed.config,
-                repos=parsed.repos,
+            result = asyncio.run(
+                run_harness(
+                    instructions=parsed.instructions,
+                    config_path=parsed.config,
+                    repos=parsed.repos,
+                )
             )
             if result:
                 print(f"\n--- Planner Result ---\n{result}")

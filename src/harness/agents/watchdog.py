@@ -17,7 +17,7 @@ class Watchdog:
             self._activities[entry.agent_id] = []
         self._activities[entry.agent_id].append(entry)
 
-    def check_agents(self) -> list[WatchdogEvent]:
+    async def check_agents(self) -> list[WatchdogEvent]:
         events: list[WatchdogEvent] = []
         now = datetime.now()
 
@@ -64,7 +64,7 @@ class Watchdog:
                 )
 
         for event in events:
-            self._emit_alert(event)
+            await self._emit_alert(event)
 
         return events
 
@@ -81,11 +81,11 @@ class Watchdog:
             action_taken="kill_requested",
         )
 
-    def _emit_alert(self, event: WatchdogEvent) -> None:
+    async def _emit_alert(self, event: WatchdogEvent) -> None:
         if self.event_bus is None:
             return
 
-        self.event_bus.emit(
+        await self.event_bus.emit(
             WatchdogAlert(
                 agent_id=event.agent_id,
                 failure_mode=event.failure_mode.value,

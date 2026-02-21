@@ -1,37 +1,51 @@
-import subprocess
+import asyncio
 
 
-def commit_changes(repo_path: str, message: str, author: str = "harness") -> str:
+async def commit_changes(repo_path: str, message: str, author: str = "harness") -> str:
     try:
-        subprocess.run(
-            ["git", "add", "-A"],
+        add_proc = await asyncio.create_subprocess_exec(
+            "git",
+            "add",
+            "-A",
             cwd=repo_path,
-            capture_output=True,
-            text=True,
-            check=True,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        await add_proc.communicate()
+        if add_proc.returncode != 0:
+            return ""
 
-        commit_result = subprocess.run(
-            ["git", "commit", "-m", message, "--author", f"{author} <{author}@harness>"],
+        commit_proc = await asyncio.create_subprocess_exec(
+            "git",
+            "commit",
+            "-m",
+            message,
+            "--author",
+            f"{author} <{author}@harness>",
             cwd=repo_path,
-            capture_output=True,
-            text=True,
-            check=False,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        commit_stdout, commit_stderr = await commit_proc.communicate()
 
-        if commit_result.returncode != 0:
-            output = f"{commit_result.stdout}\n{commit_result.stderr}".lower()
+        if commit_proc.returncode != 0:
+            output = f"{commit_stdout.decode()}\n{commit_stderr.decode()}".lower()
             if "nothing to commit" in output or "no changes added to commit" in output:
                 return ""
             return ""
 
-        hash_result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+        hash_proc = await asyncio.create_subprocess_exec(
+            "git",
+            "rev-parse",
+            "HEAD",
             cwd=repo_path,
-            capture_output=True,
-            text=True,
-            check=True,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        return hash_result.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        hash_stdout, _ = await hash_proc.communicate()
+        if hash_proc.returncode != 0:
+            return ""
+
+        return hash_stdout.decode().strip()
+    except (FileNotFoundError, OSError):
         return ""

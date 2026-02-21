@@ -47,7 +47,7 @@ class TestChaos:
 
         assert handoff.narrative == ""
 
-    def test_two_workers_same_file_merge_conflict(self, tmp_path):
+    async def test_two_workers_same_file_merge_conflict(self, tmp_path):
         canonical_dir = tmp_path / "canonical"
         workspace_1_dir = tmp_path / "workspace-1"
         workspace_2_dir = tmp_path / "workspace-2"
@@ -77,13 +77,13 @@ class TestChaos:
             base_commit="no-git",
         )
 
-        first_merge = optimistic_merge(
+        first_merge = await optimistic_merge(
             workspace=workspace_1,
             canonical_path=str(canonical_dir),
             idempotency_guard=None,
             base_snapshot=base_snapshot,
         )
-        second_merge = optimistic_merge(
+        second_merge = await optimistic_merge(
             workspace=workspace_2,
             canonical_path=str(canonical_dir),
             idempotency_guard=None,
@@ -97,7 +97,7 @@ class TestChaos:
         assert second_merge.fix_forward_task is not None
         assert second_merge.fix_forward_task.metadata["conflicts"] == [file_name]
 
-    def test_watchdog_kills_zombie_worker(self):
+    async def test_watchdog_kills_zombie_worker(self):
         watchdog = Watchdog(config=WatchdogConfig(zombie_timeout_seconds=60))
         watchdog.record_activity(
             ActivityEntry(
@@ -107,7 +107,7 @@ class TestChaos:
             )
         )
 
-        events = watchdog.check_agents()
+        events = await watchdog.check_agents()
 
         assert len(events) == 1
         assert events[0].failure_mode == FailureMode.ZOMBIE

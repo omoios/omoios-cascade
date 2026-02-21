@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 from typing import Any, Callable
@@ -50,7 +51,7 @@ class RootPlanner(BaseAgent):
         self._spawned_workers: list[str] = []
         self._reviewed_handoffs: list[str] = []
 
-    def run(self, initial_message: str = "") -> str:
+    async def run(self, initial_message: str = "") -> str:
         self._start_time = time.time()
         if initial_message:
             self.messages.append({"role": "user", "content": initial_message})
@@ -60,8 +61,8 @@ class RootPlanner(BaseAgent):
             if self.is_over_limits():
                 break
 
-            self.on_before_llm_call()
-            response = self._call_llm()
+            await self.on_before_llm_call()
+            response = await self._call_llm()
             self.total_tokens += int(getattr(response.usage, "input_tokens", 0)) + int(
                 getattr(response.usage, "output_tokens", 0)
             )
@@ -77,7 +78,7 @@ class RootPlanner(BaseAgent):
                 last_text = "\n".join(text_blocks)
 
             if response.stop_reason != "tool_use":
-                self.on_loop_exit()
+                await self.on_loop_exit()
                 return last_text
 
             tool_results: list[dict[str, str]] = []
@@ -88,6 +89,8 @@ class RootPlanner(BaseAgent):
                 handler = self.tool_handlers.get(block.name)
                 if handler:
                     result = handler(**block.input)
+                    if asyncio.iscoroutine(result):
+                        result = await result
                 else:
                     result = {"error": f"Unknown tool: {block.name}"}
                 hook_results.append({"tool_name": block.name, "tool_use_id": block.id, "result": result})
@@ -101,17 +104,17 @@ class RootPlanner(BaseAgent):
                 )
 
             self.messages.append({"role": "user", "content": tool_results})
-            self.on_tool_result(hook_results)
+            await self.on_tool_result(hook_results)
 
             if self.total_tokens >= self.config.token_budget:
                 break
             if self._start_time is not None and (time.time() - self._start_time >= self.config.timeout_seconds):
                 break
 
-        self.on_loop_exit()
+        await self.on_loop_exit()
         return last_text
 
-    def on_tool_result(self, results: list[dict]) -> None:
+    async def on_tool_result(self, results: list[dict]) -> None:
         for result in list(results):
             tool_name = result.get("tool_name", "")
             if not self.guard.check(tool_name):
@@ -190,7 +193,7 @@ class SubPlanner(BaseAgent):
     def can_delegate(self) -> bool:
         return self.config.depth < self.max_depth
 
-    def on_tool_result(self, results: list[dict]) -> None:
+    async def on_tool_result(self, results: list[dict]) -> None:
         for result in list(results):
             tool_name = result.get("tool_name", "")
             if not self.guard.check(tool_name):

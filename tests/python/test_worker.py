@@ -1,5 +1,7 @@
 import os
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from harness.agents.worker import Worker
 from harness.models.agent import AgentConfig, AgentRole
@@ -58,53 +60,56 @@ def make_worker(
 
 
 class TestWorker:
-    def test_worker_creates_workspace(self, tmp_path):
-        client = MagicMock()
+    @pytest.mark.asyncio
+    async def test_worker_creates_workspace(self, tmp_path):
+        client = AsyncMock()
         worker = make_worker(client=client, workspace_root=str(tmp_path))
 
-        workspace_path = worker.setup_workspace()
+        workspace_path = await worker.setup_workspace()
 
         assert os.path.isdir(workspace_path)
 
-    def test_worker_tools_operate_in_workspace(self, tmp_path):
-        client = MagicMock()
+    @pytest.mark.asyncio
+    async def test_worker_tools_operate_in_workspace(self, tmp_path):
+        client = AsyncMock()
         worker = make_worker(client=client, workspace_root=str(tmp_path))
 
-        workspace_path = worker.setup_workspace()
+        workspace_path = await worker.setup_workspace()
 
         assert worker.workspace_path == workspace_path
 
-    def test_worker_tracks_file_diffs(self, tmp_path):
-        client = MagicMock()
+    @pytest.mark.asyncio
+    async def test_worker_tracks_file_diffs(self, tmp_path):
+        client = AsyncMock()
         worker = make_worker(client=client, workspace_root=str(tmp_path))
-        workspace_path = worker.setup_workspace()
+        workspace_path = await worker.setup_workspace()
 
         new_file = os.path.join(workspace_path, "new_file.txt")
         with open(new_file, "w", encoding="utf-8") as f:
             f.write("hello")
 
-        diffs = worker.get_file_diffs()
+        diffs = await worker.get_file_diffs()
 
         assert len(diffs) == 1
         assert diffs[0]["path"] == "new_file.txt"
         assert diffs[0]["before"] is None
         assert diffs[0]["after"] == "hello"
 
-    def test_worker_auto_submits_handoff_on_exit(self, tmp_path):
-        client = MagicMock()
-        client.messages.create.side_effect = [
-            make_mock_response([make_text_block("done")], stop_reason="end_turn")
-        ]
+    @pytest.mark.asyncio
+    async def test_worker_auto_submits_handoff_on_exit(self, tmp_path):
+        client = AsyncMock()
+        client.messages.create.side_effect = [make_mock_response([make_text_block("done")], stop_reason="end_turn")]
         worker = make_worker(client=client, workspace_root=str(tmp_path))
 
-        worker.run("start")
+        await worker.run("start")
 
         assert worker.handoff is not None
         assert worker.handoff["worker_id"] == "w1"
         assert worker.handoff["status"] == "completed"
 
-    def test_worker_respects_token_budget(self, tmp_path):
-        client = MagicMock()
+    @pytest.mark.asyncio
+    async def test_worker_respects_token_budget(self, tmp_path):
+        client = AsyncMock()
         client.messages.create.side_effect = [
             make_mock_response(
                 [make_tool_use_block("echo_tool", {"value": "x"}, "tu_1")],
@@ -130,15 +135,16 @@ class TestWorker:
             token_budget=200,
         )
 
-        worker.run("start")
+        await worker.run("start")
 
         assert worker.total_tokens == 300
         assert client.messages.create.call_count == 2
 
-    def test_worker_cleanup_removes_workspace(self, tmp_path):
-        client = MagicMock()
+    @pytest.mark.asyncio
+    async def test_worker_cleanup_removes_workspace(self, tmp_path):
+        client = AsyncMock()
         worker = make_worker(client=client, workspace_root=str(tmp_path))
-        workspace_path = worker.setup_workspace()
+        workspace_path = await worker.setup_workspace()
 
         worker.cleanup()
 

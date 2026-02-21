@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import subprocess
-from typing import Callable
+import asyncio
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
@@ -21,34 +21,38 @@ def _collect_failures(stdout: str, stderr: str) -> list[str]:
     return [line.strip() for line in output.splitlines() if line.strip()]
 
 
-def reconcile(
+async def reconcile(
     repo_path: str,
     test_command: str,
     max_rounds: int = 3,
-    spawn_fixer_fn: Callable[[list[str]], None] | None = None,
+    spawn_fixer_fn: Callable[[list[str]], Any] | None = None,
 ) -> ReconciliationReport:
     report = ReconciliationReport()
 
     for round_num in range(1, max_rounds + 1):
-        result = subprocess.run(
+        proc = await asyncio.create_subprocess_shell(
             test_command,
-            shell=True,
-            capture_output=True,
-            text=True,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             cwd=repo_path,
         )
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        result_stdout = stdout_bytes.decode() if stdout_bytes else ""
+        result_stderr = stderr_bytes.decode() if stderr_bytes else ""
         report.rounds = round_num
 
-        if result.returncode == 0:
+        if proc.returncode == 0:
             report.final_verdict = "pass"
             report.green_commit = f"green-{round_num}"
             return report
 
-        failures = _collect_failures(result.stdout, result.stderr)
+        failures = _collect_failures(result_stdout, result_stderr)
         report.failures_found.extend(failures)
 
         if spawn_fixer_fn is not None:
-            spawn_fixer_fn(report.failures_found)
+            result = spawn_fixer_fn(report.failures_found)
+            if asyncio.iscoroutine(result):
+                await result
             report.fixes_attempted += 1
 
     report.final_verdict = "fail"

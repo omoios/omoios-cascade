@@ -42,8 +42,9 @@ def git_repo(tmp_path):
     return repo_path
 
 
-def test_create_workspace(git_repo):
-    workspace = create_workspace(str(git_repo), "worker1")
+@pytest.mark.asyncio
+async def test_create_workspace(git_repo):
+    workspace = await create_workspace(str(git_repo), "worker1")
 
     assert os.path.exists(workspace.workspace_path)
     assert os.path.isfile(os.path.join(workspace.workspace_path, "file1.txt"))
@@ -51,9 +52,10 @@ def test_create_workspace(git_repo):
     assert workspace.state == WorkspaceState.READY
 
 
-def test_workspace_isolation(git_repo):
-    workspace1 = create_workspace(str(git_repo), "worker1")
-    workspace2 = create_workspace(str(git_repo), "worker2")
+@pytest.mark.asyncio
+async def test_workspace_isolation(git_repo):
+    workspace1 = await create_workspace(str(git_repo), "worker1")
+    workspace2 = await create_workspace(str(git_repo), "worker2")
 
     ws1_file = os.path.join(workspace1.workspace_path, "file1.txt")
     ws1_file_content = "modified content"
@@ -67,8 +69,9 @@ def test_workspace_isolation(git_repo):
     assert ws2_content == "content 1"
 
 
-def test_compute_diff_detects_changes(git_repo):
-    workspace = create_workspace(str(git_repo), "worker1")
+@pytest.mark.asyncio
+async def test_compute_diff_detects_changes(git_repo):
+    workspace = await create_workspace(str(git_repo), "worker1")
 
     base_snapshot = snapshot_workspace(workspace.workspace_path)
 
@@ -82,8 +85,9 @@ def test_compute_diff_detects_changes(git_repo):
     assert diffs[0].path == "file1.txt"
 
 
-def test_compute_diff_no_changes(git_repo):
-    workspace = create_workspace(str(git_repo), "worker1")
+@pytest.mark.asyncio
+async def test_compute_diff_no_changes(git_repo):
+    workspace = await create_workspace(str(git_repo), "worker1")
 
     base_snapshot = snapshot_workspace(workspace.workspace_path)
 
@@ -92,8 +96,9 @@ def test_compute_diff_no_changes(git_repo):
     assert diffs == []
 
 
-def test_compute_diff_new_file(git_repo):
-    workspace = create_workspace(str(git_repo), "worker1")
+@pytest.mark.asyncio
+async def test_compute_diff_new_file(git_repo):
+    workspace = await create_workspace(str(git_repo), "worker1")
 
     base_snapshot = snapshot_workspace(workspace.workspace_path)
 
@@ -107,8 +112,9 @@ def test_compute_diff_new_file(git_repo):
     assert diffs[0].path == "new_file.txt"
 
 
-def test_cleanup_workspace(git_repo):
-    workspace = create_workspace(str(git_repo), "worker1")
+@pytest.mark.asyncio
+async def test_cleanup_workspace(git_repo):
+    workspace = await create_workspace(str(git_repo), "worker1")
 
     assert os.path.exists(workspace.workspace_path)
 
@@ -118,8 +124,9 @@ def test_cleanup_workspace(git_repo):
     assert workspace.state == WorkspaceState.CLEANED
 
 
-def test_snapshot_workspace(git_repo):
-    workspace = create_workspace(str(git_repo), "worker1")
+@pytest.mark.asyncio
+async def test_snapshot_workspace(git_repo):
+    workspace = await create_workspace(str(git_repo), "worker1")
 
     snapshot = snapshot_workspace(workspace.workspace_path)
 
@@ -130,51 +137,56 @@ def test_snapshot_workspace(git_repo):
 
 
 class TestCommitChanges:
-    def test_commit_new_file(self, git_repo):
+    @pytest.mark.asyncio
+    async def test_commit_new_file(self, git_repo):
         new_file = git_repo / "new.txt"
         new_file.write_text("new content")
 
-        commit_hash = commit_changes(str(git_repo), "add new file")
+        commit_hash = await commit_changes(str(git_repo), "add new file")
 
         assert commit_hash != ""
 
-    def test_commit_nothing(self, git_repo):
-        commit_hash = commit_changes(str(git_repo), "no-op commit")
+    @pytest.mark.asyncio
+    async def test_commit_nothing(self, git_repo):
+        commit_hash = await commit_changes(str(git_repo), "no-op commit")
 
         assert commit_hash == ""
 
 
 class TestOptimisticMerge:
-    def test_clean_merge_new_file(self, git_repo):
-        workspace = create_workspace(str(git_repo), "worker-merge-new")
+    @pytest.mark.asyncio
+    async def test_clean_merge_new_file(self, git_repo):
+        workspace = await create_workspace(str(git_repo), "worker-merge-new")
         base_snapshot = snapshot_workspace(workspace.workspace_path)
 
         new_file = os.path.join(workspace.workspace_path, "merged_new.txt")
         with open(new_file, "w") as file_handle:
             file_handle.write("new from worker")
 
-        result = optimistic_merge(workspace, str(git_repo), base_snapshot=base_snapshot)
+        result = await optimistic_merge(workspace, str(git_repo), base_snapshot=base_snapshot)
 
         assert result.status == MergeStatus.CLEAN
         assert "merged_new.txt" in result.files_merged
         assert (git_repo / "merged_new.txt").read_text() == "new from worker"
 
-    def test_clean_merge_modified_file(self, git_repo):
-        workspace = create_workspace(str(git_repo), "worker-merge-mod")
+    @pytest.mark.asyncio
+    async def test_clean_merge_modified_file(self, git_repo):
+        workspace = await create_workspace(str(git_repo), "worker-merge-mod")
         base_snapshot = snapshot_workspace(workspace.workspace_path)
 
         ws_file = os.path.join(workspace.workspace_path, "file1.txt")
         with open(ws_file, "w") as file_handle:
             file_handle.write("worker modified")
 
-        result = optimistic_merge(workspace, str(git_repo), base_snapshot=base_snapshot)
+        result = await optimistic_merge(workspace, str(git_repo), base_snapshot=base_snapshot)
 
         assert result.status == MergeStatus.CLEAN
         assert "file1.txt" in result.files_merged
         assert (git_repo / "file1.txt").read_text() == "worker modified"
 
-    def test_conflict_detection(self, git_repo):
-        workspace = create_workspace(str(git_repo), "worker-merge-conflict")
+    @pytest.mark.asyncio
+    async def test_conflict_detection(self, git_repo):
+        workspace = await create_workspace(str(git_repo), "worker-merge-conflict")
         base_snapshot = snapshot_workspace(workspace.workspace_path)
 
         ws_file = os.path.join(workspace.workspace_path, "file1.txt")
@@ -183,23 +195,25 @@ class TestOptimisticMerge:
 
         (git_repo / "file1.txt").write_text("canonical version")
 
-        result = optimistic_merge(workspace, str(git_repo), base_snapshot=base_snapshot)
+        result = await optimistic_merge(workspace, str(git_repo), base_snapshot=base_snapshot)
 
         assert result.status == MergeStatus.CONFLICT
         assert "file1.txt" in result.conflicts
         assert result.fix_forward_task is not None
 
-    def test_no_changes(self, git_repo):
-        workspace = create_workspace(str(git_repo), "worker-merge-no-changes")
+    @pytest.mark.asyncio
+    async def test_no_changes(self, git_repo):
+        workspace = await create_workspace(str(git_repo), "worker-merge-no-changes")
         base_snapshot = snapshot_workspace(workspace.workspace_path)
 
-        result = optimistic_merge(workspace, str(git_repo), base_snapshot=base_snapshot)
+        result = await optimistic_merge(workspace, str(git_repo), base_snapshot=base_snapshot)
 
         assert result.status == MergeStatus.NO_CHANGES
         assert result.files_merged == []
 
-    def test_idempotency_prevents_duplicate_merge(self, git_repo):
-        workspace = create_workspace(str(git_repo), "worker-merge-idempotent")
+    @pytest.mark.asyncio
+    async def test_idempotency_prevents_duplicate_merge(self, git_repo):
+        workspace = await create_workspace(str(git_repo), "worker-merge-idempotent")
         base_snapshot = snapshot_workspace(workspace.workspace_path)
 
         new_file = os.path.join(workspace.workspace_path, "idempotent.txt")
@@ -208,13 +222,13 @@ class TestOptimisticMerge:
 
         guard = IdempotencyGuard()
 
-        first_result = optimistic_merge(
+        first_result = await optimistic_merge(
             workspace,
             str(git_repo),
             idempotency_guard=guard,
             base_snapshot=base_snapshot,
         )
-        second_result = optimistic_merge(
+        second_result = await optimistic_merge(
             workspace,
             str(git_repo),
             idempotency_guard=guard,

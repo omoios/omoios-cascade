@@ -34,11 +34,15 @@ class ShutdownHandler:
         self._callbacks: list[Callable] = []
 
     def register(self) -> None:
-        def _handler(_signum: int, _frame: object | None) -> None:
-            self.request_shutdown()
+        import asyncio
 
-        signal.signal(signal.SIGINT, _handler)
-        signal.signal(signal.SIGTERM, _handler)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.add_signal_handler(signal.SIGINT, self.request_shutdown)
+            loop.add_signal_handler(signal.SIGTERM, self.request_shutdown)
+        except RuntimeError:
+            signal.signal(signal.SIGINT, lambda _signum, _frame: self.request_shutdown())
+            signal.signal(signal.SIGTERM, lambda _signum, _frame: self.request_shutdown())
 
     def add_callback(self, fn: Callable) -> None:
         self._callbacks.append(fn)

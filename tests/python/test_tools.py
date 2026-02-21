@@ -1,3 +1,5 @@
+import pytest
+
 from harness.tools.planner_tools import create_default_registry
 from harness.tools.worker_tools import (
     bash_handler,
@@ -9,48 +11,56 @@ from harness.tools.worker_tools import (
 
 
 class TestBashHandler:
-    def test_echo_hello(self, tmp_path):
-        result = bash_handler("echo hello", str(tmp_path))
+    @pytest.mark.asyncio
+    async def test_echo_hello(self, tmp_path):
+        result = await bash_handler("echo hello", str(tmp_path))
         assert "hello" in result["stdout"]
         assert result["exit_code"] == 0
 
-    def test_false_command(self, tmp_path):
-        result = bash_handler("false", str(tmp_path))
+    @pytest.mark.asyncio
+    async def test_false_command(self, tmp_path):
+        result = await bash_handler("false", str(tmp_path))
         assert result["exit_code"] != 0
 
-    def test_stderr_capture(self, tmp_path):
-        result = bash_handler("echo err >&2", str(tmp_path))
+    @pytest.mark.asyncio
+    async def test_stderr_capture(self, tmp_path):
+        result = await bash_handler("echo err >&2", str(tmp_path))
         assert "err" in result["stderr"]
 
-    def test_dangerous_command_blocked(self, tmp_path):
-        result = bash_handler("rm -rf /", str(tmp_path))
+    @pytest.mark.asyncio
+    async def test_dangerous_command_blocked(self, tmp_path):
+        result = await bash_handler("rm -rf /", str(tmp_path))
         assert "blocked" in result["stderr"].lower()
         assert result["exit_code"] == -1
 
-    def test_timeout(self, tmp_path):
-        result = bash_handler("sleep 10", str(tmp_path), timeout=1)
+    @pytest.mark.asyncio
+    async def test_timeout(self, tmp_path):
+        result = await bash_handler("sleep 10", str(tmp_path), timeout=1)
         assert "timed out" in result["stderr"].lower()
         assert result["exit_code"] == -1
 
 
 class TestReadFileHandler:
-    def test_existing_file(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_existing_file(self, tmp_path):
         test_file = tmp_path / "test.txt"
         test_file.write_text("Hello\nWorld\nTest")
 
-        result = read_file_handler("test.txt", str(tmp_path))
+        result = await read_file_handler("test.txt", str(tmp_path))
         assert "Hello" in result["content"]
         assert "World" in result["content"]
 
-    def test_missing_file(self, tmp_path):
-        result = read_file_handler("nonexistent.txt", str(tmp_path))
+    @pytest.mark.asyncio
+    async def test_missing_file(self, tmp_path):
+        result = await read_file_handler("nonexistent.txt", str(tmp_path))
         assert "error" in result
 
-    def test_offset_and_limit(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_offset_and_limit(self, tmp_path):
         test_file = tmp_path / "test.txt"
         test_file.write_text("Line1\nLine2\nLine3\nLine4\nLine5")
 
-        result = read_file_handler("test.txt", str(tmp_path), offset=1, limit=2)
+        result = await read_file_handler("test.txt", str(tmp_path), offset=1, limit=2)
         content = result["content"].rstrip("\n")
         lines = content.split("\n")
         assert len(lines) == 2
@@ -59,41 +69,46 @@ class TestReadFileHandler:
 
 
 class TestWriteFileHandler:
-    def test_creates_new_file(self, tmp_path):
-        result = write_file_handler("new.txt", "Hello World", str(tmp_path))
+    @pytest.mark.asyncio
+    async def test_creates_new_file(self, tmp_path):
+        result = await write_file_handler("new.txt", "Hello World", str(tmp_path))
         assert result["bytes_written"] > 0
         assert (tmp_path / "new.txt").exists()
         assert (tmp_path / "new.txt").read_text() == "Hello World"
 
-    def test_overwrites_existing(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_overwrites_existing(self, tmp_path):
         test_file = tmp_path / "existing.txt"
         test_file.write_text("Original")
 
-        result = write_file_handler("existing.txt", "Updated", str(tmp_path))
+        result = await write_file_handler("existing.txt", "Updated", str(tmp_path))
         assert result["bytes_written"] > 0
         assert test_file.read_text() == "Updated"
 
 
 class TestEditFileHandler:
-    def test_find_and_replace(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_find_and_replace(self, tmp_path):
         test_file = tmp_path / "edit.txt"
         test_file.write_text("Hello World")
 
-        result = edit_file_handler("edit.txt", "World", "Python", str(tmp_path))
+        result = await edit_file_handler("edit.txt", "World", "Python", str(tmp_path))
         assert result["replacements"] == 1
         assert "Python" in test_file.read_text()
 
-    def test_old_string_not_found(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_old_string_not_found(self, tmp_path):
         test_file = tmp_path / "edit.txt"
         test_file.write_text("Hello World")
 
-        result = edit_file_handler("edit.txt", "NotFound", "Python", str(tmp_path))
+        result = await edit_file_handler("edit.txt", "NotFound", "Python", str(tmp_path))
         assert "error" in result
 
 
 class TestSubmitHandoffHandler:
-    def test_handoff_submission(self):
-        result = submit_handoff_handler(
+    @pytest.mark.asyncio
+    async def test_handoff_submission(self):
+        result = await submit_handoff_handler(
             agent_id="agent-1",
             task_id="task-1",
             status="completed",

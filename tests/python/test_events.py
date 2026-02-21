@@ -1,4 +1,4 @@
-import threading
+import asyncio
 
 from harness.events import (
     EventBus,
@@ -8,7 +8,7 @@ from harness.events import (
 )
 
 
-def test_emit_and_subscribe():
+async def test_emit_and_subscribe():
     bus = EventBus()
     callback_called = []
 
@@ -18,18 +18,18 @@ def test_emit_and_subscribe():
     bus.subscribe("worker_spawned", callback)
 
     event = WorkerSpawned(task_id="task-123")
-    bus.emit(event)
+    await bus.emit(event)
 
     assert len(callback_called) == 1
     assert callback_called[0].task_id == "task-123"
 
 
-def test_history_records():
+async def test_history_records():
     bus = EventBus()
 
-    bus.emit(WorkerSpawned(task_id="task-1"))
-    bus.emit(WorkerCompleted(task_id="task-2"))
-    bus.emit(WorkerSpawned(task_id="task-3"))
+    await bus.emit(WorkerSpawned(task_id="task-1"))
+    await bus.emit(WorkerCompleted(task_id="task-2"))
+    await bus.emit(WorkerSpawned(task_id="task-3"))
 
     history = bus.history
     assert len(history) == 3
@@ -38,19 +38,15 @@ def test_history_records():
     assert history[2].task_id == "task-3"
 
 
-def test_thread_safety():
+async def test_async_concurrency():
     bus = EventBus()
     num_events = 100
 
-    def emit_events():
+    async def emit_events():
         for i in range(num_events):
-            bus.emit(WorkerSpawned(task_id=f"task-{i}"))
+            await bus.emit(WorkerSpawned(task_id=f"task-{i}"))
 
-    threads = [threading.Thread(target=emit_events) for _ in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    await asyncio.gather(emit_events(), emit_events())
 
     assert len(bus.history) == num_events * 2
 
