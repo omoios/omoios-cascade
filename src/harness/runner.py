@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import uuid
 from functools import partial
-from typing import Any
+from typing import Any, Callable
 
 from harness.agents.planner import RootPlanner
 from harness.agents.watchdog import Watchdog
@@ -510,6 +510,56 @@ class HarnessRunner:
             "get_error_budget": self._handle_get_error_budget,
         }
 
+    def _build_fixer_fn(self) -> Callable[[list[str]], None] | None:
+        repo = self.config.repos[0] if self.config.repos else None
+        if not repo:
+            return None
+
+        def fixer_fn(failures: list[str]) -> None:
+            import os
+
+            fixer_id = f"fixer-{uuid.uuid4().hex[:8]}"
+            failure_summary = "\n".join(failures[:20])
+
+            client = self._make_client()
+            fixer_config = AgentConfig(
+                agent_id=fixer_id,
+                role=AgentRole.WORKER,
+                task_id=f"fix-{fixer_id}",
+                repo=repo,
+                token_budget=self.config.agents.worker_token_budget,
+                timeout_seconds=self.config.agents.worker_timeout_seconds,
+            )
+
+            tool_handlers = {
+                "bash": partial(bash_handler, workspace_path=repo),
+                "read_file": partial(read_file_handler, workspace_path=repo),
+                "write_file": partial(write_file_handler, workspace_path=repo),
+                "edit_file": partial(edit_file_handler, workspace_path=repo),
+                "submit_handoff": submit_handoff_handler,
+            }
+
+            fixer = Worker(
+                client=client,
+                config=fixer_config,
+                tool_handlers=tool_handlers,
+                tool_schemas=WORKER_TOOL_SCHEMAS,
+                event_bus=self.event_bus,
+                system_prompt=(
+                    f"You are a fixer agent. The test command failed with these errors:\n"
+                    f"{failure_summary}\n\n"
+                    f"Fix the code in the current directory so the tests pass. "
+                    f"Read the failing files, understand the errors, and edit to fix. "
+                    f"When done, submit your work via submit_handoff."
+                ),
+                workspace_root=os.path.dirname(repo),
+                scratchpad=Scratchpad(),
+            )
+
+            fixer.run(f"Fix these test failures:\n{failure_summary}")
+
+        return fixer_fn
+
     def _prune_workspaces(self) -> None:
         import os
         import shutil
@@ -568,7 +618,8 @@ class HarnessRunner:
             reconciliation_report = reconcile(
                 repo_path=self.config.repos[0],
                 test_command=self.config.test_command,
-                max_rounds=3,
+                max_rounds=self.config.errors.max_reconciliation_rounds,
+                spawn_fixer_fn=self._build_fixer_fn(),
             )
             self.renderer.console.print(f"[bold]Reconciliation: {reconciliation_report.final_verdict}[/]")
             self.renderer.console.print(
@@ -582,8 +633,7 @@ class HarnessRunner:
         if self.config.workspace.cleanup_on_success:
             for worker in self._workers.values():
                 worker.cleanup()
-        else:
-            self._prune_workspaces()
+        self._prune_workspaces()
 
         self.renderer.console.print()
         self.renderer.console.print("[bold]Harness complete[/]")

@@ -189,10 +189,8 @@ Layer 6:   End-to-end (real LLM)
 - [x] Post-run reconciliation with configurable test_command
 - [x] Live tier testing (Tiers 1-10) against MiniMax API -- all passing
 
-### Not Started
-
-- [ ] Workspace cleanup with configurable retain
-- [ ] Wire spawn_fixer_fn for auto-fix in reconciliation
+- [x] Workspace cleanup with configurable retain (always prune at end of run)
+- [x] Wire spawn_fixer_fn for auto-fix in reconciliation
 
 ---
 
