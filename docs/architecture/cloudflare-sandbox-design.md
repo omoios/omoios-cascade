@@ -1,6 +1,8 @@
 # Distributed Sandbox Pool Design
 
-A distributed alternative to the single-box harness architecture. Uses Cloudflare Workflows (Python) for durable orchestration, Modal Sandboxes for agent execution with memory snapshots, Neon Postgres for coordination, and Cloudflare R2 for object storage. Performance-critical paths implemented in Rust via PyO3.
+A distributed execution layer for the harness. The harness (Python, running locally or on any host) controls orchestration. Modal Sandboxes execute agent work with memory snapshots for multi-day runs. Neon Postgres coordinates state. Cloudflare R2 provides volume mounts for workspace storage. Performance-critical paths implemented in Rust via PyO3.
+
+Designed for long-horizon runs spanning multiple days.
 
 ## Platform Rationale
 
@@ -8,12 +10,12 @@ Each platform handles what it does best:
 
 | Concern | Platform | Why |
 |---|---|---|
-| Orchestration | CF Workflows (Python) | Durable execution with automatic step retries, state persistence between steps, DAG support. Survives crashes without losing progress. |
-| Agent execution | Modal Sandboxes | Sub-second cold starts, memory snapshots for pause/resume, Python-first SDK, gVisor isolation, scales to 20,000 concurrent. |
-| Merge serialization | Modal Sandbox (dedicated) | Runs git operations that need a full Linux environment. Sequential dispatch via orchestrator. |
-| Coordination DB | Neon Postgres | Already running. Full Postgres features (JSONB, FOR UPDATE SKIP LOCKED, enums). Reachable from both CF (Hyperdrive) and Modal (direct psycopg). |
-| Object storage / volumes | Cloudflare R2 | Zero egress fees. S3-compatible. Stores volume snapshots, repo tarballs, patches. Reachable from Modal via boto3. |
-| Real-time dashboard | Modal + FastRTC | WebRTC streaming with <100ms latency for live agent progress. |
+| Orchestration | Harness (Python process) | The harness you're building. Runs locally or anywhere. Postgres is the durable state — if it crashes, restart and read the database. No platform lock-in. |
+| Agent execution | Modal Sandboxes | Sub-second cold starts, memory snapshots for pause/resume across days, Python-first SDK, gVisor isolation, scales to 20,000 concurrent. |
+| Merge serialization | Modal Sandbox (dedicated) | Runs git operations that need a full Linux environment. Sequential dispatch via harness. |
+| Coordination DB | Neon Postgres (pooled) | Already running. Full Postgres features (JSONB, FOR UPDATE SKIP LOCKED, enums). Sandboxes use the pooled endpoint (PgBouncer, 10K concurrent) to avoid clogging direct connections. |
+| Volume storage | Cloudflare R2 (mounted) | Zero egress fees. S3-compatible. Mounted directly into Modal sandboxes via [CloudBucketMount](https://modal.com/docs/guide/cloud-bucket-mounts). No tarball pull/push needed. |
+| Real-time dashboard | Modal + FastRTC | WebRTC streaming with <100ms latency for live agent progress. (Post-MVP) |
 
 ## Service Mapping
 
@@ -21,49 +23,51 @@ Each platform handles what it does best:
 |---|---|---|
 | Task board | In-memory dict | Neon Postgres |
 | Handoff store | In-memory dict | Neon Postgres + R2 (metadata in PG, diffs in R2) |
-| Agent heartbeats | Thread-local | Neon Postgres rows, polled by watchdog step |
-| Repo copies per worker | `.workspaces/worker-*/` | R2 tarball → Modal sandbox ephemeral disk (snapshotable) |
-| Canonical repo | `.workspaces/canonical/` | R2 object (tarball) |
-| Merge serialization | Thread lock | Orchestrator workflow step (sequential by design) |
-| Task dispatch | Thread pool | Orchestrator creates Modal sandboxes via SDK |
-| Watchdog | Daemon thread | CF Workflow step (periodic check in orchestrate loop) |
-| Orchestrator | Root Planner in main thread | CF Workflow (Python, durable steps) |
+| Agent heartbeats | Thread-local | Neon Postgres rows, polled by harness watchdog loop |
+| Repo copies per worker | `.workspaces/worker-*/` | R2 volume mount in Modal sandbox (snapshotable) |
+| Canonical repo | `.workspaces/canonical/` | R2 volume mount (shared, writable by merge sandbox only) |
+| Merge serialization | Thread lock | Harness dispatches merge sandboxes sequentially |
+| Task dispatch | Thread pool | Harness creates Modal sandboxes via SDK |
+| Watchdog | Daemon thread | Harness async loop (poll heartbeats, kill stale sandboxes) |
+| Orchestrator | Root Planner in main thread | Harness (the package you're building) |
 | Worker agent | Thread with own workspace | Modal Sandbox (Python + Rust/PyO3) |
 
 ### Database Connectivity
 
 Two access paths to the same Neon Postgres database:
 
-- **CF Workflows (Python on edge)** connect through Cloudflare Hyperdrive. Hyperdrive maintains a global connection pool, eliminating per-request connection setup latency. Disable Neon's built-in PgBouncer — Hyperdrive replaces it.
+- **Harness (orchestrator)** connects directly to Neon. Single long-lived connection. Uses asyncpg with the direct connection string (`*.neon.tech:5432`).
 
-- **Modal Sandboxes (full Linux)** connect directly to Neon using psycopg or asyncpg. Standard Postgres drivers, no special adapters needed.
+- **Modal Sandboxes (workers)** connect through Neon's [pooled endpoint](https://neon.com/docs/connect/choose-connection) (`*-pooler.neon.tech:5432`). This goes through Neon's built-in PgBouncer, which handles up to 10,000 concurrent connections. Sandboxes are short-lived and numerous — the pooler prevents them from exhausting direct connection slots.
+
+```
+Harness (1 connection)  ──► Neon direct endpoint  ──► Postgres
+                                                           ▲
+Sandbox 1 ─┐                                               │
+Sandbox 2 ─┤── Neon pooled endpoint ── PgBouncer (10K) ────┘
+Sandbox N ─┘
+```
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│              CF Workflow (Python, durable execution)       │
-│                                                           │
-│  @step.do("decompose")                                    │
-│  → LLM call: instruction → task list                      │
-│  → INSERT tasks into Neon Postgres                        │
-│                                                           │
-│  @step.do("dispatch", depends=["decompose"])              │
-│  → For each task: modal.Sandbox.create(...)               │
-│  → Store sandbox IDs in Postgres                          │
-│                                                           │
-│  @step.do("orchestrate", depends=["dispatch"])            │
-│  → Poll Postgres for handoff completions                  │
-│  → Watchdog: check heartbeats, kill stale sandboxes       │
-│  → On handoff: merge patch into canonical (R2)            │
-│  → On conflict: create fix task, dispatch new sandbox     │
-│  → Loop until all tasks resolved                          │
-│                                                           │
-│  @step.do("reconcile", depends=["orchestrate"])           │
-│  → Create Modal sandbox: pull canonical, run test suite   │
-│  → If green → snapshot to R2 as green branch              │
-│  → If red → parse failures, create fixer tasks (max 3)    │
-│  → Re-enter orchestrate if fixers spawned                 │
+│              Harness (Python, runs anywhere)              │
+│                                                          │
+│  Your orchestrator. Async Python process.                │
+│                                                          │
+│  1. Decompose: LLM call → task list → INSERT into PG    │
+│  2. Dispatch: modal.Sandbox.create() per task            │
+│  3. Orchestrate: poll PG for handoffs, merge, watchdog   │
+│     Loop until all tasks resolved.                       │
+│     Runs for days. Postgres is the durable state.        │
+│     If harness crashes: restart, read PG, continue.      │
+│  4. Reconcile: test suite sandbox, fixer loop            │
+│                                                          │
+│  Connects to:                                            │
+│  - Neon Postgres (asyncpg, direct)                       │
+│  - Modal SDK (sandbox create/terminate/snapshot)         │
+│  - R2 (boto3, for config and patch metadata)             │
 └──────────┬───────────────────────────────────────────────┘
            │ Modal Python SDK
      ┌─────┴─────┬───────────┬───────────┐
@@ -72,6 +76,9 @@ Two access paths to the same Neon Postgres database:
 │  Modal   │ │  Modal   │ │  Modal   │ │  Modal   │
 │ Sandbox  │ │ Sandbox  │ │ Sandbox  │ │ Sandbox  │
 │ (worker) │ │ (worker) │ │ (worker) │ │ (merge)  │
+│          │ │          │ │          │ │          │
+│ R2 mount │ │ R2 mount │ │ R2 mount │ │ R2 mount │
+│ /vol     │ │ /vol     │ │ /vol     │ │ /vol     │
 │          │ │          │ │          │ │          │
 │ Python   │ │ Python   │ │ Python   │ │ git ops  │
 │ + Rust   │ │ + Rust   │ │ + Rust   │ │ + Rust   │
@@ -85,22 +92,23 @@ Two access paths to the same Neon Postgres database:
            ▼                                 ▼
 ┌──────────────────────────────────────────────────────┐
 │                    Neon Postgres                      │
-│  (CF via Hyperdrive | Modal via direct psycopg)      │
+│  (harness via direct | sandboxes via pooled/PgBouncer)│
 │  tasks | handoffs | agents | merge_log               │
 └──────────────────────────────────────────────────────┘
            │                                 │
            ▼                                 ▼
 ┌──────────────────────────────────────────────────────┐
 │                    Cloudflare R2                      │
-│  repos/{project}/canonical.tar.gz                    │
-│  repos/{project}/patches/{handoff_id}.patch          │
-│  repos/{project}/snapshots/{sha}.tar.gz              │
+│  Mounted into sandboxes via CloudBucketMount         │
+│  volumes/{project}/canonical/                        │
+│  volumes/{project}/workers/{sandbox_id}/             │
+│  patches/{project}/{handoff_id}.patch                │
 └──────────────────────────────────────────────────────┘
 ```
 
 ## Postgres Schema (Neon)
 
-Single Neon Postgres database. CF Workflows access it via Hyperdrive. Modal Sandboxes access it directly via psycopg. Disable Neon's built-in PgBouncer when Hyperdrive is in use.
+Single Neon Postgres database. Harness connects directly (asyncpg). Modal Sandboxes connect through the pooled endpoint (PgBouncer, up to 10K concurrent).
 
 ```sql
 CREATE TYPE task_status AS ENUM (
@@ -116,7 +124,7 @@ CREATE TYPE merge_status AS ENUM (
 );
 
 CREATE TYPE agent_status AS ENUM (
-    'starting', 'active', 'completed', 'failed', 'killed'
+    'starting', 'active', 'completed', 'failed', 'killed', 'paused'
 );
 
 CREATE TYPE agent_role AS ENUM (
@@ -211,163 +219,132 @@ CREATE TABLE merge_log (
 -- each other and never claim the same task.
 ```
 
-## R2 Layout (Volume Snapshots + Object Storage)
+## R2 Volume Mounts
 
-R2 serves as the volume snapshot layer. Zero egress fees make it practical to pull large repo tarballs into sandboxes frequently. S3-compatible, so Modal sandboxes access it via boto3/aioboto3.
-
-```
-harness-pool/
-├── volumes/
-│   └── {project_id}/
-│       ├── canonical.tar.gz           # current canonical repo state (volume snapshot)
-│       ├── canonical.sha              # content hash for cache invalidation
-│       └── snapshots/
-│           └── {sha}.tar.gz           # point-in-time volume snapshots (green branches)
-├── patches/
-│   └── {project_id}/
-│       └── {handoff_id}.patch         # git-format patches from workers
-├── artifacts/
-│   └── {handoff_id}/
-│       └── ...                        # build outputs, logs, generated files
-└── config/
-    └── {project_id}.json              # project-level config (repos, branches, limits)
-```
-
-The `volumes/` prefix stores complete workspace snapshots. These are the "volume mounts" for sandboxes — each worker pulls a volume snapshot at startup, works locally, and produces a patch. The merge sandbox pulls the canonical volume, applies the patch, and uploads a new volume snapshot if clean.
-
-The `canonical.sha` file is a small object containing the content hash of the current canonical tarball. Sandboxes check this before downloading to avoid re-fetching unchanged state.
-
-Volume snapshots in R2 complement Modal's filesystem snapshots. R2 snapshots are portable (any sandbox can pull them), persistent (no expiry), and cheap (zero egress). Modal filesystem snapshots are faster to restore but tied to Modal's infrastructure and have retention limits (30 days for directory snapshots).
-
-## Orchestrator (CF Workflow, Python)
-
-The orchestrator is a Cloudflare Workflow written in Python. Each step is independently retriable with state persisted between steps. If the workflow crashes, it resumes from the last completed step.
+R2 is mounted directly into Modal sandboxes via [CloudBucketMount](https://modal.com/docs/guide/cloud-bucket-mounts). No tarball pull/push — sandboxes read and write files on the R2 mount as if they were local disk. Zero egress fees make this practical even for large repos.
 
 ```python
-from workers import WorkflowEntrypoint
-from workers.workflows import step
+r2_secret = modal.Secret.from_name("r2-credentials")
+# Contains: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# (R2 uses S3-compatible auth)
+
+r2_mount = modal.CloudBucketMount(
+    bucket_name="harness-pool",
+    bucket_endpoint_url="https://<ACCOUNT_ID>.r2.cloudflarestorage.com",
+    secret=r2_secret,
+)
+
+# Mount into sandbox at /vol
+sb = modal.Sandbox.create(
+    "python", "-m", "harness.sandbox_worker",
+    image=worker_image,
+    cloud_bucket_mounts={"/vol": r2_mount},
+    timeout=300,
+)
+# Sandbox sees /vol/volumes/{project}/canonical/ as a local directory
+```
+
+### R2 Layout
+
+```
+harness-pool/                              # R2 bucket
+├── volumes/
+│   └── {project_id}/
+│       ├── canonical/                     # current canonical repo (live directory, not tarball)
+│       └── snapshots/
+│           └── {sha}/                     # point-in-time snapshots (green branches)
+├── patches/
+│   └── {project_id}/
+│       └── {handoff_id}.patch             # git-format patches from workers
+├── artifacts/
+│   └── {handoff_id}/
+│       └── ...                            # build outputs, logs, generated files
+└── config/
+    └── {project_id}.json                  # project-level config (repos, branches, limits)
+```
+
+With CloudBucketMount, canonical is a live directory on R2 — not a tarball. The merge sandbox writes directly to `volumes/{project}/canonical/` on the mount. Worker sandboxes read from it at startup to copy into their local workspace (workers write to local disk, not to the R2 mount, to avoid write contention).
+
+Snapshots are full copies of canonical at green-branch points. Cheap to store on R2 (zero egress, $0.015/GB/month).
+
+## Orchestration (Harness)
+
+The harness is the orchestrator. It's the Python package you're building (`src/harness/`). It runs as a long-lived async Python process — locally, on a VM, wherever. Postgres is the durable state. If the harness crashes, restart it and it picks up from the database.
+
+```python
+import asyncio
+import asyncpg
 import modal
 
-class HarnessWorkflow(WorkflowEntrypoint):
-    """Durable orchestration workflow. Each step survives crashes."""
+async def run_harness(instruction: str, project_id: str):
+    pool = await asyncpg.create_pool(NEON_DIRECT_URL)
 
-    async def run(self, ctx, payload):
-        instruction = payload["instruction"]
-        project_id = payload["project_id"]
+    # 1. Decompose
+    tasks = await llm_decompose(instruction, project_id)
+    await db_insert_tasks(pool, tasks)
 
-        # Step 1: Decompose instruction into tasks
-        tasks = await self.decompose(ctx, instruction, project_id)
-
-        # Step 2: Dispatch sandboxes for each task
-        sandbox_ids = await self.dispatch(ctx, tasks, project_id)
-
-        # Step 3: Orchestrate (loop until all resolved)
-        await self.orchestrate(ctx, project_id)
-
-        # Step 4: Reconcile (test suite, fixer loop)
-        await self.reconcile(ctx, project_id)
-
-    @step.do("decompose")
-    async def decompose(self, ctx, instruction, project_id):
-        """LLM decomposes instruction into task rows in Postgres."""
-        # Connect to Neon via Hyperdrive
-        tasks = await llm_decompose(instruction, project_id)
-        await db_insert_tasks(ctx.env, tasks)
-        return [t["id"] for t in tasks]
-
-    @step.do("dispatch")
-    async def dispatch(self, ctx, task_ids, project_id):
-        """Create a Modal sandbox for each task."""
-        sandbox_ids = []
-        for task_id in task_ids:
-            sb = modal.Sandbox.create(
-                "python", "-m", "harness.sandbox_worker",
-                image=worker_image,
-                secrets=[modal.Secret.from_name("harness-secrets")],
-                timeout=300,
-                _experimental_enable_snapshot=True,
-            )
-            await db_assign_task(ctx.env, task_id, sb.object_id)
-            sandbox_ids.append(sb.object_id)
-        return sandbox_ids
-
-    @step.do("orchestrate")
-    async def orchestrate(self, ctx, project_id):
-        """Poll for completions, merge, handle conflicts, watchdog."""
-        while True:
-            # Check for new handoffs
-            handoffs = await db_pending_handoffs(ctx.env, project_id)
-            for h in handoffs:
-                await self.merge_handoff(ctx, h)
-
-            # Watchdog: kill stale sandboxes
-            stale = await db_stale_agents(ctx.env)
-            for agent in stale:
-                sb = modal.Sandbox.from_id(agent["sandbox_id"])
-                sb.terminate()
-                await db_requeue_task(ctx.env, agent["task_id"])
-
-            # Check completion
-            remaining = await db_incomplete_tasks(ctx.env, project_id)
-            if not remaining:
-                break
-
-            await ctx.sleep("10s")
-
-    @step.do("reconcile")
-    async def reconcile(self, ctx, project_id):
-        """Run test suite on canonical. Spawn fixers if needed."""
-        for round in range(3):  # Hard cap: 3 fixer rounds
-            sb = modal.Sandbox.create(
-                "bash", "-c", "cd /work && tar xzf canonical.tar.gz && make test",
-                image=worker_image,
-                timeout=600,
-            )
-            sb.wait()
-            if sb.returncode == 0:
-                # Green branch -- snapshot canonical
-                await r2_snapshot_canonical(ctx.env, project_id)
-                return
-            # Parse failures, create fixer tasks
-            failures = parse_test_output(sb.stderr.read())
-            fixer_tasks = await llm_generate_fixers(failures)
-            await db_insert_tasks(ctx.env, fixer_tasks)
-            await self.dispatch(ctx, [t["id"] for t in fixer_tasks], project_id)
-            await self.orchestrate(ctx, project_id)
-        raise Exception(f"Reconciliation failed after 3 rounds for {project_id}")
-
-    async def merge_handoff(self, ctx, handoff):
-        """Apply a worker's patch to canonical. Sequential by design."""
+    # 2. Dispatch
+    for task in tasks:
         sb = modal.Sandbox.create(
-            "python", "-m", "harness.merge_worker",
+            "python", "-m", "harness.sandbox_worker",
             image=worker_image,
-            environment={
-                "HANDOFF_ID": handoff["id"],
-                "PATCH_KEY": handoff["diff_path"],
-                "PROJECT_ID": handoff["project_id"],
-            },
-            timeout=120,
+            cloud_bucket_mounts={"/vol": r2_mount},
+            secrets=[modal.Secret.from_name("harness-secrets")],
+            timeout=300,
+            _experimental_enable_snapshot=True,
         )
-        sb.wait()
-        # Merge worker writes result to merge_log in Postgres
+        await db_assign_task(pool, task["id"], sb.object_id)
+
+    # 3. Orchestrate (runs for hours/days)
+    while True:
+        # Merge completed handoffs
+        handoffs = await db_pending_handoffs(pool, project_id)
+        for h in handoffs:
+            await dispatch_merge(h)
+
+        # Watchdog: kill stale sandboxes, snapshot idle ones
+        stale = await db_stale_agents(pool)
+        for agent in stale:
+            sb = modal.Sandbox.from_id(agent["sandbox_id"])
+            sb.terminate()
+            await db_requeue_task(pool, agent["task_id"])
+
+        # Check completion
+        remaining = await db_incomplete_tasks(pool, project_id)
+        if not remaining:
+            break
+
+        await asyncio.sleep(10)
+
+    # 4. Reconcile
+    await run_reconciliation(pool, project_id)
+
+    await pool.close()
 ```
 
-### Why CF Workflows Instead of a Modal Function
+### Why Not a Managed Workflow Service
 
-The orchestrator needs durable execution — if it crashes mid-run (network error, timeout, OOM), it must resume from the last completed step without re-doing work. CF Workflows provides this natively: each `@step.do` boundary is a checkpoint. Modal functions don't have built-in durable execution with step-level persistence.
+The harness needs to run for **days**. CF Workflows, Temporal, and similar platforms have execution time limits and add complexity for what is fundamentally a polling loop. Postgres is already the durable state — every task, handoff, and agent status is persisted. If the harness process dies:
 
-The orchestrator also doesn't need a full Linux environment. It makes LLM calls and database queries — both are HTTP. CF Workflows runs Python on the edge (via Pyodide), which is sufficient for this control-plane logic.
+1. Restart the harness
+2. It reads the task board from Postgres
+3. It reconnects to running sandboxes via their IDs (stored in Postgres)
+4. It continues the orchestration loop
 
-### API Surface
+No checkpointing framework needed. The database IS the checkpoint.
 
-The workflow is triggered via CF Workers HTTP handler:
+### API Surface (Optional)
+
+The harness can optionally expose an HTTP API for external control:
 
 ```
-POST /projects/{id}/run     -- start a workflow instance
-GET  /projects/{id}/status  -- current workflow state + task board
-POST /projects/{id}/cancel  -- cancel workflow and terminate sandboxes
+POST /projects/{id}/run     -- start a run
+GET  /projects/{id}/status  -- current task board + active sandboxes
+POST /projects/{id}/cancel  -- cancel run, terminate all sandboxes
 GET  /handoffs/{id}         -- read handoff with narrative
 ```
+
+This is not required for MVP — the harness can run as a CLI tool.
 
 ## Modal Sandbox Lifecycle
 
@@ -389,43 +366,42 @@ worker_image = (
 ```
 Sandbox startup:
   1. Read task_id and project_id from environment
-  2. Connect to Neon Postgres (direct psycopg, no Hyperdrive)
+  2. Connect to Neon Postgres via pooled endpoint (asyncpg + PgBouncer)
   3. Read task spec from tasks table
-  4. Pull canonical.tar.gz from R2 (boto3, S3-compatible) → extract to /work
+  4. Copy canonical from R2 mount (/vol/volumes/{project}/canonical/) → /work
+     (local copy for isolated modifications)
 
 Sandbox execution:
   5. Agent loop: LLM calls → tool use → file modifications on /work
   6. Heartbeat: UPDATE agents SET heartbeat_at=now() every 15 seconds
 
 Sandbox completion:
-  7. Generate patch: harness_core.diff_trees(/work_original, /work) → patch bytes
-  8. Upload patch to R2 as repos/{project}/patches/{handoff_id}.patch
+  7. Generate patch: harness_core.diff_trees(/vol/.../canonical, /work) → patch bytes
+  8. Write patch to R2 mount: /vol/patches/{project}/{handoff_id}.patch
   9. INSERT handoff row (narrative, metrics, diff_path)
   10. UPDATE task status to 'completed'
-  11. Exit (sandbox terminates or sleeps)
+  11. Exit (sandbox terminates) or snapshot if pausing
 ```
 
-### Memory Snapshots (Pause/Resume)
+### Memory Snapshots (Multi-Day Runs)
 
-Modal's memory snapshot feature solves the ephemeral disk problem. A sandbox's entire state — memory, filesystem, running processes — can be snapshotted and later restored as a new sandbox.
-
-Use cases in the harness:
+For runs spanning multiple days, memory snapshots are essential. A sandbox's entire state — memory, filesystem, running processes — can be snapshotted and later restored as a new sandbox. This is how agents survive across days without losing context.
 
 ```python
-# Snapshot a long-running agent before idle timeout
+# End of day / idle timeout: snapshot the agent
 sb = modal.Sandbox.from_id(sandbox_id)
 snapshot = sb._experimental_snapshot()
 await db_update_agent(agent_id, snapshot_id=snapshot.object_id, status="paused")
 
-# Resume from snapshot when work is available
+# Next day / work available: resume from snapshot
 snapshot = modal.SandboxSnapshot.from_id(snapshot_id)
 sb = snapshot.restore(timeout=300)
 await db_update_agent(agent_id, sandbox_id=sb.object_id, status="active")
 ```
 
 This enables:
-- **Cost savings.** Pause idle sandboxes instead of keeping them running. Resume only when the orchestrator has work for them.
-- **Long-running agents.** Agents that exceed Modal's 24-hour sandbox limit can be snapshotted, then restored into a fresh sandbox with full state preserved.
+- **Multi-day agents.** Agents that exceed Modal's 24-hour sandbox limit get snapshotted and restored into fresh sandboxes with full state preserved. The agent doesn't know it was paused.
+- **Cost savings.** Pause idle sandboxes instead of keeping them running. Resume only when the harness has work for them.
 - **Warm pools.** Pre-create sandboxes with the repo extracted and dependencies loaded, snapshot them, then restore from snapshot for sub-second "cold" starts.
 
 ### Filesystem Snapshots (Cheaper Alternative)
@@ -440,6 +416,7 @@ fs_snapshot = sb._experimental_filesystem_snapshot()
 new_sb = modal.Sandbox.create(
     "python", "-m", "harness.sandbox_worker",
     image=worker_image.from_snapshot(fs_snapshot),
+    cloud_bucket_mounts={"/vol": r2_mount},
     timeout=300,
 )
 ```
@@ -451,21 +428,21 @@ A dedicated sandbox type that only handles merge operations:
 ```
 Sandbox startup:
   1. Read environment: HANDOFF_ID, PATCH_KEY, PROJECT_ID
-  2. Connect to Neon Postgres (direct psycopg)
-  3. Pull canonical.tar.gz from R2 → extract to /canonical
-  4. Pull patch from R2
+  2. Connect to Neon Postgres via pooled endpoint
+  3. Read canonical from R2 mount: /vol/volumes/{project}/canonical/
+  4. Read patch from R2 mount: /vol/patches/{project}/{handoff_id}.patch
 
 Merge execution:
   5. Apply patch: harness_core.patch_apply(canonical_path, patch_bytes)
   6. If conflict → INSERT merge_log(result='conflict', details=...), exit
-  7. If clean → run build/test command (from project config in R2)
+  7. If clean → run build/test command (from project config)
   8. If build fails → INSERT merge_log(result='build_fail', details=...), exit
-  9. If green → tar /canonical → upload to R2 as new canonical.tar.gz
+  9. If green → write updated files to R2 mount canonical directory
   10. INSERT merge_log(result='clean', canonical_sha=new_sha)
   11. Exit
 ```
 
-Merges are sequential by design — the orchestrator's `merge_handoff` method processes one handoff at a time within the `orchestrate` step.
+Merges are sequential by design — the harness dispatches one merge sandbox at a time.
 
 ## Rust Core (harness-core)
 
@@ -563,18 +540,18 @@ CI builds both wheels. The linux wheel is baked into the Modal image. The macOS 
 
 ## Concurrency Model
 
-Four layers of parallelism, each handling a different concern:
+Three layers of parallelism, each handling a different concern:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                      asyncio                             │
-│  (top-level event loop in orchestrator + each sandbox)   │
+│  (top-level event loop in harness + each sandbox)        │
 │                                                          │
 │  All network I/O is async:                               │
 │  - LLM API calls (httpx / anthropic async client)        │
 │  - Postgres queries (asyncpg)                            │
-│  - R2 operations (aioboto3)                              │
-│  - Agent Protocol HTTP calls (httpx)                     │
+│  - R2 operations (aioboto3 or via mount)                 │
+│  - Modal SDK calls (sandbox create/terminate/snapshot)   │
 │  - Heartbeat writes                                      │
 │                                                          │
 │  Handles 90% of concurrency. No GIL contention           │
@@ -600,25 +577,16 @@ Four layers of parallelism, each handling a different concern:
 │  sync boundaries.   │     │  A diff that takes 2s in      │
 │                     │     │  Python takes ~50ms in Rust.   │
 └────────────────────┘     └──────────────────────────────┘
-         │
-         ▼
-┌────────────────────┐
-│  multiprocessing    │
-│  (NOT needed)       │
-│                     │
-│  Modal provides     │
-│  process isolation  │
-│  across machines.   │
-│  No local process   │
-│  pools required.    │
-└────────────────────┘
 ```
+
+Note: `multiprocessing` is not needed. Modal provides process isolation across machines. No local process pools required.
 
 ### How They Compose
 
-**Inside the orchestrator (CF Workflow):**
-- asyncio event loop handles all HTTP calls (LLM, Postgres, Modal SDK)
-- No threads or processes needed — orchestrator is pure I/O
+**Inside the harness (orchestrator):**
+- asyncio event loop handles all I/O (Postgres, Modal SDK, LLM calls for decomposition)
+- No threads or processes needed — the harness is pure I/O
+- Runs for days; the event loop just keeps polling
 
 **Inside a worker sandbox (Modal):**
 ```python
@@ -642,11 +610,8 @@ async def agent_loop():
         # Rust/PyO3: CPU-bound diff at handoff time (GIL released)
         patch = harness_core.diff_trees(original_path, work_path)
 
-        # Async: upload patch to R2
-        await r2_client.put_object(Key=patch_key, Body=patch)
-
-        # Async: heartbeat (runs concurrently via task)
-        # (started once, runs in background)
+        # Write patch to R2 mount (local filesystem write via CloudBucketMount)
+        Path("/vol/patches/{project}/{handoff_id}.patch").write_bytes(patch)
 
 async def heartbeat_loop(agent_id: str):
     while True:
@@ -657,7 +622,8 @@ async def heartbeat_loop(agent_id: str):
         await asyncio.sleep(15)
 
 async def main():
-    async with asyncpg.create_pool(DATABASE_URL) as pool:
+    # Sandboxes use pooled endpoint to avoid clogging direct connections
+    async with asyncpg.create_pool(NEON_POOLED_URL) as pool:
         await asyncio.gather(
             agent_loop(),
             heartbeat_loop(agent_id),
@@ -718,7 +684,7 @@ ACP is the more relevant one. It's purpose-built for coding agents and the agent
 
 ### How It Would Work
 
-Each Modal sandbox runs one coding agent with an ACP-compatible interface. The orchestrator dispatches tasks to sandboxes the same way it does for custom workers — the only difference is what runs inside the sandbox.
+Each Modal sandbox runs one coding agent with an ACP-compatible interface. The harness dispatches tasks to sandboxes the same way it does for custom workers — the only difference is what runs inside the sandbox.
 
 ```python
 # Future: agent routing by task type
@@ -765,32 +731,35 @@ This is not needed for MVP but becomes valuable when running 20+ agents and want
 
 ## MVP Definition
 
-The minimum viable system that demonstrates the hybrid architecture end-to-end.
+The minimum viable system that proves the distributed loop works end-to-end. The harness controls everything.
 
 ### MVP Scope
 
 ```
-CF Workflow (Python)
-  - Single workflow: decompose → dispatch → orchestrate → done
-  - Decomposes instruction into 3-5 leaf tasks (no sub-planners)
+Harness (Python, local)
+  - Async Python process: decompose → dispatch → orchestrate → done
+  - Decomposes instruction into 3-5 leaf tasks
   - Flat task list, no recursive hierarchy
   - Single LLM call for decomposition
-  - Sequential merge in orchestrate loop
+  - Sequential merge dispatch
   - Zombie-only watchdog (heartbeat staleness check)
+  - Connects to Neon direct, Modal SDK, R2 via boto3
 
 Neon Postgres
   - tasks + handoffs + agents tables
-  - No merge_log (merges logged as handoff status updates)
+  - Harness: direct connection (asyncpg)
+  - Sandboxes: pooled endpoint (PgBouncer, up to 10K)
 
 Cloudflare R2
-  - canonical.tar.gz (single project)
-  - patches/{handoff_id}.patch
+  - CloudBucketMount into sandboxes at /vol
+  - volumes/{project}/canonical/ (live directory)
+  - patches/{project}/{handoff_id}.patch
 
 Modal Sandboxes
-  - Worker sandboxes: Python agent loop, no scratchpad, no compression
-  - Pull canonical from R2, do work, push patch, write handoff to Postgres
-  - Heartbeat every 15s (direct psycopg)
-  - No memory snapshots (sandboxes run to completion)
+  - Worker sandboxes: Python agent loop, R2 mount, no scratchpad
+  - Copy canonical from /vol mount to /work, do work, write patch to /vol
+  - Heartbeat every 15s (asyncpg, pooled endpoint)
+  - No memory snapshots yet (sandboxes run to completion)
 
 Rust Core
   - diff_trees + patch_apply + hash_tree only
@@ -799,93 +768,89 @@ Rust Core
 
 ### MVP Does NOT Include
 
-- Recursive sub-planners (flat task decomposition only)
-- Handoff review by LLM (auto-accept all completions)
-- Build/test verification in merge pipeline
+- Memory snapshots (sandboxes run to completion for MVP)
+- Reconciliation pass (test suite, fixer loop)
 - Scratchpad rewriting or context compression
 - Multi-project support
-- Memory snapshots or warm pools
-- Green branch reconciliation pass
+- Warm pools
 - Error budgets or tunnel-vision detection
 - Real-time dashboard / WebRTC streaming
+- ACP / layering other agents
 
 ### MVP File Structure
 
 ```
-harness-distributed/
-├── orchestrator/                  # CF Workflow (Python)
-│   ├── src/
-│   │   ├── workflow.py            # HarnessWorkflow (decompose, dispatch, orchestrate)
-│   │   ├── llm.py                 # Anthropic API calls for decomposition
-│   │   ├── db.py                  # Postgres queries (via Hyperdrive)
-│   │   └── r2.py                  # R2 operations
-│   └── wrangler.toml              # Hyperdrive binding, R2 binding
-├── harness-core/                  # Rust crate (PyO3)
-│   ├── Cargo.toml
-│   ├── pyproject.toml             # maturin config
-│   └── src/
-│       ├── lib.rs
-│       ├── patch.rs
-│       └── hash.rs
-├── src/harness/                   # Python package (runs in Modal sandboxes)
-│   ├── sandbox_worker.py          # Worker sandbox entrypoint
-│   ├── merge_worker.py            # Merge sandbox entrypoint
-│   ├── agent_loop.py              # Core agent loop (LLM + tools)
-│   ├── tools.py                   # bash, read, write, edit
-│   ├── db.py                      # psycopg Neon connection (direct)
-│   └── r2_client.py               # R2 via boto3 (S3-compatible)
-├── modal_app.py                   # Modal image definitions + sandbox helpers
-├── schema.sql                     # Postgres schema (Neon)
-└── pyproject.toml
+src/harness/                           # The harness package (orchestrator + worker code)
+├── __init__.py
+├── config.py                          # pydantic-settings: config from .env
+├── orchestrator.py                    # Main async loop (decompose, dispatch, orchestrate)
+├── sandbox_worker.py                  # Worker sandbox entrypoint (runs in Modal)
+├── merge_worker.py                    # Merge sandbox entrypoint (runs in Modal)
+├── agent_loop.py                      # Core agent loop (LLM + tools)
+├── tools.py                           # bash, read, write, edit
+├── db.py                              # asyncpg queries (pooled + direct)
+├── r2_client.py                       # R2 mount helpers + boto3 fallback
+├── modal_app.py                       # Modal image definitions + sandbox helpers
+├── models/
+│   ├── task.py                        # Task, TaskStatus
+│   ├── handoff.py                     # Handoff, HandoffMetrics
+│   └── agent.py                       # AgentState, AgentConfig
+└── cli.py                             # CLI entrypoint (click or typer)
+
+harness-core/                          # Rust crate (PyO3)
+├── Cargo.toml
+├── pyproject.toml                     # maturin config
+└── src/
+    ├── lib.rs
+    ├── patch.rs
+    └── hash.rs
+
+schema.sql                             # Postgres schema (Neon)
 ```
 
 ## Scaling Path (Post-MVP)
 
 Once the MVP works end-to-end with flat task decomposition and sequential merge:
 
-**Phase 1: Memory Snapshots.** Enable `_experimental_enable_snapshot` on worker sandboxes. Snapshot idle agents instead of killing them. Maintain a warm pool of pre-snapshotted sandboxes with the repo already extracted for near-instant dispatch.
+**Phase 1: Memory Snapshots.** Enable `_experimental_enable_snapshot` on worker sandboxes. Snapshot idle agents instead of killing them. Snapshot agents at end-of-day for multi-day continuity. Maintain a warm pool of pre-snapshotted sandboxes for near-instant dispatch.
 
-**Phase 2: Recursive Hierarchy.** Add sub-planner support. A sub-planner is a sandbox that decomposes its slice and creates sub-tasks in Postgres. The orchestrator tracks hierarchy depth and enforces max depth.
+**Phase 2: Reconciliation.** After all tasks complete, run the reconciliation step: pull canonical from R2 mount, run full test suite in a sandbox, parse failures, spawn targeted fixer tasks. Hard cap of 3 fixer rounds.
 
-**Phase 3: Handoff Review.** Orchestrator uses LLM to review handoff narratives before accepting. Failed reviews create retry tasks with feedback in the spec.
+**Phase 3: Coherence.** Add scratchpad rewriting, context compression, and state reconstruction for long-running agents. Use memory snapshots to persist agent state across compression events. Add error budgets and tunnel-vision detection to the watchdog.
 
-**Phase 4: Reconciliation.** After all tasks complete, run the reconciliation step: pull canonical, run full test suite in a sandbox, parse failures, spawn targeted fixer tasks. Hard cap of 3 fixer rounds.
+**Phase 4: ACP Integration.** Layer existing agents (Claude Code, Codex, goose) as alternative workers via Agent Client Protocol wrappers. Route tasks to the best agent for each task type.
 
-**Phase 5: Coherence.** Add scratchpad rewriting, context compression, and state reconstruction for long-running agents. Use memory snapshots to persist agent state across compression events. Add error budgets and tunnel-vision detection to the watchdog.
-
-**Phase 6: Real-Time Dashboard.** WebRTC streaming via Modal FastRTC for live agent progress. Browser-based dashboard showing task board, active sandboxes, and streaming agent output.
+**Phase 5: Real-Time Dashboard.** WebRTC streaming via Modal FastRTC for live agent progress. Browser-based dashboard showing task board, active sandboxes, and streaming agent output.
 
 ## Cost Model (Rough Estimates)
 
-Based on current pricing for a run of 50 tasks:
+Based on current pricing for a 50-task run (single day):
 
 | Resource | Usage | Cost |
 |---|---|---|
 | Neon Postgres | ~5,000 queries, ~50 MB storage | Free tier or ~$0.10 on Scale |
-| Hyperdrive | Included with Workers paid plan | $0 (bundled) |
 | R2 storage | ~500 MB (canonical + patches + snapshots) | ~$0.0075 |
 | R2 operations | ~200 Class A + ~500 Class B | ~$0.001 |
-| CF Workflows | ~50 step executions | ~$0.015 |
 | Modal Sandboxes | 50 workers x ~2 min each = 100 min CPU | ~$0.16 (at $0.047/vCPU-hr) |
 | Modal Merge | ~50 merges x ~30s each = 25 min CPU | ~$0.02 |
-| Anthropic API | 50 agent runs + decomposition + review | Dominant cost |
+| Anthropic API | 50 agent runs + decomposition | Dominant cost |
 
-**Total infrastructure: ~$0.40 per 50-task run** (excluding LLM costs).
+**Total infrastructure: ~$0.20 per 50-task run** (excluding LLM costs).
 
-The infrastructure cost is negligible compared to LLM API costs. A 50-task run costs under $1 in infrastructure vs $50-200 in Anthropic API calls depending on model and context length. Modal is cheaper than CF Containers for this workload because of per-second billing and the ability to scale to zero between runs.
+For multi-day runs, Modal costs scale linearly with active sandbox time. Snapshotted (paused) sandboxes cost nothing. The dominant cost remains LLM API calls.
 
 Since you already have a Neon instance, the database cost is effectively zero.
 
 ## Open Questions
 
-1. **CF Workflow + Modal SDK compatibility.** CF Python Workflows run on Pyodide (WebAssembly). The Modal Python SDK may not work inside Pyodide due to native dependencies. If not, the workflow would need to call a thin HTTP API that wraps Modal SDK operations, or use Modal's REST API directly. Alternative: run the orchestrator as a Modal function with manual checkpointing to Postgres instead of CF Workflows.
+1. **R2 CloudBucketMount write performance.** CloudBucketMount uses FUSE under the hood. Write performance may be slower than local disk for small random writes (which agents do a lot). If this is a problem, workers should copy canonical from the mount to local disk at startup (`cp -r /vol/.../canonical/ /work/`), work on local disk, then write the patch back to the mount. The merge sandbox may need the same pattern.
 
-2. **Neon connection limits.** Neon free tier allows 100 concurrent connections (5 per endpoint on autoscale). With 50 sandboxes each holding a psycopg connection, that is 50 connections. At 200+ workers, need connection pooling at the sandbox level (psycopg pool) or accept connection churn.
+2. **Neon connection limits at scale.** The pooled endpoint handles up to 10K concurrent connections. For MVP (50 sandboxes), this is fine. At 200+ concurrent sandboxes with frequent heartbeat writes (every 15s), monitor PgBouncer saturation. If needed, batch heartbeat writes or reduce frequency.
 
-3. **R2 access from Modal.** Modal sandboxes have outbound network access. R2 is S3-compatible, so boto3 works. But R2 authentication requires Cloudflare API tokens, which need to be passed as Modal Secrets. Latency between Modal's infrastructure and R2 depends on region placement.
+3. **R2 auth in Modal.** R2 authentication requires Cloudflare API tokens passed as Modal Secrets. The CloudBucketMount uses S3-compatible auth (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` mapped to R2 tokens). Needs to be set up once in Modal's secret store.
 
-4. **Rust core for Pyodide.** The orchestrator runs on Pyodide (WASM). If orchestrator-side code needs Rust functions (e.g., `topo_sort` for scheduling), the Rust crate would need a WASM build in addition to the linux/x86_64 build for Modal. For MVP, keep graph operations in pure Python in the orchestrator and Rust only in sandboxes.
+4. **Modal snapshot stability.** Memory snapshots are marked `_experimental`. If the API changes or snapshots become unreliable, fall back to filesystem snapshots (stable) or treat sandboxes as fully ephemeral and rely on R2 + Postgres for all state recovery.
 
-5. **Modal snapshot stability.** Memory snapshots are marked `_experimental`. If the API changes or snapshots become unreliable, fall back to filesystem snapshots (stable) or treat sandboxes as fully ephemeral (like the original CF Containers design).
+5. **Multi-day snapshot management.** For runs spanning days, snapshots accumulate. Need a retention policy: keep latest snapshot per agent, delete older ones after 7 days. Modal's snapshot retention limits (30 days for directory snapshots) may also apply.
 
-6. **Merge serialization without Durable Objects.** The orchestrator's `orchestrate` step processes merges sequentially in a loop. If the workflow step times out mid-merge, the step retries and the merge must be idempotent. The merge worker should check `merge_log` before applying to avoid double-merging.
+6. **Merge idempotency.** If the harness crashes mid-merge-dispatch, restarting may attempt the same merge again. The merge worker should check `merge_log` before applying to avoid double-merging. The handoff's `merge_status` field prevents this at the database level.
