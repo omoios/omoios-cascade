@@ -1,7 +1,14 @@
+from __future__ import annotations
+
 import asyncio
 import inspect
 from datetime import datetime
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from harness.storage import HarnessDB
 
 from pydantic import BaseModel, Field
 
@@ -151,9 +158,10 @@ class DegradationCritical(HarnessEvent):
 
 
 class EventBus:
-    def __init__(self):
+    def __init__(self, db: HarnessDB | None = None):
         self._subscribers: dict[str, list[Callable[[HarnessEvent], Any]]] = {}
         self._history: list[HarnessEvent] = []
+        self._db = db
         self._lock = asyncio.Lock()
 
     def subscribe(self, event_type: str, callback: Callable[[HarnessEvent], Any]) -> None:
@@ -164,6 +172,13 @@ class EventBus:
     async def emit(self, event: HarnessEvent) -> None:
         async with self._lock:
             self._history.append(event)
+            if self._db is not None:
+                self._db.insert_event(
+                    timestamp=event.timestamp.timestamp(),
+                    event_type=event.event_type,
+                    agent_id=event.agent_id,
+                    payload=event.details,
+                )
             callbacks = self._subscribers.get(event.event_type, [])
         for callback in callbacks:
             if inspect.iscoroutinefunction(callback):

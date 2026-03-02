@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from functools import partial
 from pathlib import Path
@@ -19,28 +20,27 @@ from harness.config_loader import (
     load_agents_md,
 )
 from harness.events import EventBus, SkillInjected, WorkerSpawned
+from harness.git.snapshot_store import SnapshotStore
 from harness.models.agent import AgentConfig, AgentRole
 from harness.models.error_budget import ErrorBudget
+from harness.models.merge import MergeResult, MergeStatus
 from harness.models.task import Task, TaskStatus
+from harness.models.workspace import Workspace
+from harness.models.coherence import IdempotencyGuard
 from harness.orchestration.idempotency import CompletionGate
+from harness.orchestration.merge import optimistic_merge
 from harness.orchestration.scratchpad import Scratchpad
 from harness.orchestration.shutdown import ShutdownHandler
 from harness.rendering import RichRenderer
-from harness.tools.browser_tool import browser_handler, visual_verify_handler
-from harness.tools.git_tools import git_branch_handler, git_commit_handler, git_diff_handler, git_status_handler
+from harness.storage import HarnessDB
 from harness.tools.skill_tools import create_skill_handler, load_skill_handler
-from harness.tools.web_tools import http_fetch_handler, url_extract_handler
 from harness.tools.worker_tools import (
-    ask_handler,
-    background_task_handler,
     bash_handler,
-    check_background_handler,
     edit_file_handler,
     find_files_handler,
     grep_handler,
     read_file_handler,
     submit_handoff_handler,
-    todo_write_handler,
     write_file_handler,
 )
 
@@ -49,35 +49,38 @@ PLANNER_SYSTEM_PROMPT = (
     "You delegate work to workers — you never edit files yourself.\n\n"
     "MANDATORY WORKFLOW (follow every step):\n"
     "1. Write initial scratchpad via rewrite_scratchpad with your plan.\n"
-    "2. Create tasks via create_task (one per unit of work).\n"
-    "3. Spawn a worker for each task via spawn_worker.\n"
-    "4. After spawning, call review_handoff with the task_id to wait for "
-    "the worker to finish and get its handoff.\n"
-    "5. CRITICAL: After reviewing, you MUST call accept_handoff (if work "
-    "looks good) or reject_handoff (if it needs redo). This marks the "
-    "task complete on the board. Skipping this leaves tasks unfinished.\n"
-    "6. Update scratchpad after each accept/reject.\n"
-    "7. When ALL tasks are accepted, summarize results and stop.\n\n"
+    "2. Create tasks via create_task. ONE task per unit of WRITING work. "
+    "Do NOT create exploration or read-only tasks.\n"
+    "3. Spawn ONE worker per task via spawn_worker.\n"
+    "4. IMMEDIATELY call review_handoff to wait for the worker's result.\n"
+    "5. Call accept_handoff or reject_handoff. This is MANDATORY.\n"
+    "6. Repeat steps 3-5 for each task. When ALL accepted, stop.\n\n"
     "Required scratchpad sections: ## Goal, ## Active Workers, "
     "## Pending Handoffs, ## Error Budget, ## Blockers, ## Next Action\n\n"
-    "Rules:\n"
+    "RULES (NEVER VIOLATE):\n"
     "- You CANNOT use bash, write_file, or edit_file.\n"
-    "- Every spawned worker MUST be reviewed and accepted/rejected.\n"
+    "- NEVER create tasks for 'exploring', 'reading', or 'understanding' code. "
+    "Workers already read files as part of their implementation work.\n"
+    "- NEVER spawn a worker whose only job is to read or explore. "
+    "Every worker MUST produce file changes (diffs).\n"
+    "- Spawn → review → accept/reject. Do NOT rewrite scratchpad between these.\n"
     "- Use blocked_by in create_task when ordering matters.\n"
-    "- Check error budget via get_error_budget if errors occur.\n"
+    "- If the entire task is simple (1-2 files), use ONE worker for everything.\n"
 )
 
 WORKER_SYSTEM_PROMPT = (
-    "You are a Worker agent in a multi-agent orchestration harness.\n\n"
-    "Your task will be specified below. Execute it completely.\n\n"
-    "Tools available: bash, read_file, write_file, edit_file, grep, find_files, todo_write, submit_handoff.\n\n"
-    "Constraints:\n"
+    "You are a Worker agent. Execute the assigned task completely.\n\n"
+    "WORKFLOW (follow this exact order):\n"
+    "1. Read the files you need to understand the codebase (use read_file).\n"
+    "2. Make your changes (use write_file or edit_file).\n"
+    "3. Run tests to verify (use bash with the project's test command).\n"
+    "4. Submit your work (use submit_handoff with a detailed narrative).\n\n"
+    "CRITICAL RULES:\n"
+    "- Do NOT run git commands, ls, pwd, or other exploratory commands.\n"
+    "- Go straight to reading the files you need to modify.\n"
     "- NEVER decompose work into subtasks or spawn other agents.\n"
     "- NEVER modify files outside your assigned workspace.\n"
-    "- NEVER skip testing your changes.\n"
-    "- ALWAYS submit a handoff via submit_handoff when your work is complete.\n"
-    "- Do NOT ask for clarification unless the task is truly ambiguous.\n"
-    "- Do NOT plan beyond your delegated scope.\n"
+    "- ALWAYS submit a handoff when done. Include what you changed and why.\n"
 )
 
 SUB_PLANNER_SYSTEM_PROMPT = (
@@ -93,6 +96,13 @@ SUB_PLANNER_SYSTEM_PROMPT = (
 WATCHDOG_SYSTEM_PROMPT = (
     "You are a Watchdog agent monitoring worker health.\n\nYou detect failure modes and recommend interventions.\n"
 )
+
+WORKER_CORE_TOOLS = {"bash", "read_file", "write_file", "edit_file", "submit_handoff", "grep", "find_files"}
+_READ_ONLY_PATTERNS = {
+    "explore", "read", "understand", "examine", "inspect", "look", "scan",
+    "check", "review", "browse", "discover", "investigate", "analyze",
+    "get", "list", "view", "observe", "survey", "fetch",
+}
 
 WORKER_TOOL_SCHEMAS = [
     {
@@ -510,7 +520,27 @@ PLANNER_TOOL_SCHEMAS = [
             "required": [],
         },
     },
-]
+    {
+        "name": "read_canonical_file",
+        "description": "Read a file from the canonical repo (after merges). Use to see current state.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative file path in canonical repo"}
+            },
+            "required": ["path"]
+        },
+    },
+    {
+        "name": "list_workers",
+        "description": "List all workers and their current status.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        },
+    },
+    ]
 
 
 class _ClientProxy:
@@ -536,10 +566,14 @@ class _MessagesProxy:
         return await self._client.messages.create(**kwargs)
 
 
+logger = logging.getLogger(__name__)
+
 class HarnessRunner:
     def __init__(self, config: HarnessConfig):
         self.config = config
-        self.event_bus = EventBus()
+        self._db = HarnessDB(".harness/harness.db")
+        self._snapshot_store = SnapshotStore(".harness/snapshots.db")
+        self.event_bus = EventBus(db=self._db)
         self.renderer = RichRenderer(event_bus=self.event_bus)
         self.error_budget = ErrorBudget(
             threshold=config.errors.budget_percentage,
@@ -548,29 +582,29 @@ class HarnessRunner:
         self.scratchpad = Scratchpad()
         self.completion_gate = CompletionGate()
         self.shutdown_handler = ShutdownHandler()
-        self.watchdog = Watchdog(config=config.watchdog, event_bus=self.event_bus)
+        self.watchdog = Watchdog(config=config.watchdog, event_bus=self.event_bus, db=self._db)
 
         self._tasks: dict[str, Task] = {}
         self._workers: dict[str, Worker] = {}
         self._sub_planners: dict[str, SubPlanner] = {}
         self._async_tasks: dict[str, asyncio.Task] = {}
         self._sub_async_tasks: dict[str, asyncio.Task] = {}
-        self._handoffs: dict[str, dict] = {}
-        self._base_snapshots: dict[str, dict[str, str]] = {}
+        self._total_spawns: int = 0
         self._prompt_texts = self._load_prompts()
         self._agents_md_content: str = ""
         self._discovered_extensions: list[Any] = []
         self._skill_loader: SkillLoader = SkillLoader()
         self._skill_registry: SkillRegistry = SkillRegistry()
         self._hook_registry: HookRegistry = HookRegistry()
+        self._idempotency_guard = IdempotencyGuard()
+        self._shutting_down: bool = False
+        self._watchdog_task: asyncio.Task | None = None
+        self._sub_planner_depth: int = 0
+
+        self._watchdog_task: asyncio.Task | None = None
 
     def _active_worker_tool_schemas(self) -> list[dict]:
-        schemas = list(WORKER_TOOL_SCHEMAS)
-        if not self.config.git_tools.enabled:
-            schemas = [s for s in schemas if s["name"] not in {"git_status", "git_diff", "git_commit", "git_branch"}]
-        if not self.config.web_tools.enabled:
-            schemas = [s for s in schemas if s["name"] not in {"http_fetch", "url_extract"}]
-        return schemas
+        return [s for s in WORKER_TOOL_SCHEMAS if s["name"] in WORKER_CORE_TOOLS]
 
     def _load_prompt_file(self, filename: str, fallback: str) -> str:
         prompt_path = Path(__file__).resolve().parent / "prompts" / filename
@@ -591,12 +625,12 @@ class HarnessRunner:
             from harness.orchestration.shutdown import HarnessCheckpoint, checkpoint
 
             state = HarnessCheckpoint(
-                task_states={task_id: task.status.value for task_id, task in self._tasks.items()},
+                task_states={task_id: task.status.value for task_id, task in list(self._tasks.items())},
                 worker_states={
                     task_id: "running"
                     if (self._async_tasks.get(task_id) and not self._async_tasks[task_id].done())
                     else "stopped"
-                    for task_id in self._workers
+                    for task_id in list(self._workers)
                 },
                 error_budget_snapshot={
                     "failures": self.error_budget.failed_tasks,
@@ -637,25 +671,46 @@ class HarnessRunner:
         return models.default
 
     def _handle_create_task(self, task_id: str, description: str, blocked_by: list[str] | None = None) -> dict:
+        if task_id in self._tasks:
+            return {"status": "exists", "task_id": task_id, "description": self._tasks[task_id].description}
         task = Task(id=task_id, title=task_id, description=description, blocked_by=blocked_by or [])
+
         self._tasks[task_id] = task
         return {"status": "created", "task_id": task_id, "description": description}
 
     async def _handle_spawn_worker(self, task_id: str, task: str = "", skills: list[str] | None = None) -> dict:
         if task_id in self._workers:
             return {"error": f"Worker already spawned for task: {task_id}"}
+        running = sum(1 for t in list(self._async_tasks.values()) if not t.done())
+        if running >= self.config.agents.max_workers:
+            return {"error": f"Max concurrent workers ({self.config.agents.max_workers}) reached. Wait for current workers to finish."}
+        max_lifetime = self.config.agents.max_workers * 3
+        if self._total_spawns >= max_lifetime:
+            return {"error": f"Total spawn cap ({max_lifetime}) reached. No more workers will be created. Review existing handoffs."}
 
         stored_task = self._tasks.get(task_id)
         if stored_task:
             stored_task.status = TaskStatus.IN_PROGRESS
             stored_task.assigned_to = f"worker-{task_id}"
 
+        # Structural guard: reject read-only / explore workers by task_id pattern
+        task_id_lower = task_id.lower().replace("-", "_")
+        task_id_words = set(task_id_lower.split("_"))
+        if task_id_words & _READ_ONLY_PATTERNS:
+            if stored_task:
+                stored_task.status = TaskStatus.COMPLETED  # Don't leave it in_progress
+            return {
+                "error": (
+                    f"Rejected: task '{task_id}' looks like a read-only task. "
+                    "Workers must produce file changes. Merge this into a worker that writes code. "
+                    "For example: instead of 'explore_code' then 'add_search', just do 'add_search'."
+                ),
+            }
+
         worker_id = f"worker-{task_id}"
         repo = self.config.repos[0] if self.config.repos else None
         if repo:
-            from harness.git.workspace import snapshot_workspace
-
-            self._base_snapshots[task_id] = await asyncio.to_thread(snapshot_workspace, repo)
+            await asyncio.to_thread(self._snapshot_store.capture, f"base-{task_id}", repo)
 
         client = self._make_client(model=self._get_model_for_role("worker"))
         worker_config = AgentConfig(
@@ -694,10 +749,11 @@ class HarnessRunner:
             tool_handlers=worker_tool_handlers,
             tool_schemas=self._active_worker_tool_schemas(),
             event_bus=self.event_bus,
-            system_prompt=(f"{self._prompt_texts['worker']}\n\nTask: {task_desc}"),
+            system_prompt=(f"{self._prompt_texts['worker']}\n\nWorkspace: {workspace_root}/{worker_id}\nAll file paths are relative to your workspace. Do NOT use absolute paths.\n\nTask: {task_desc}"),
             workspace_root=workspace_root,
             scratchpad=Scratchpad(),
             watchdog=self.watchdog,
+            db=self._db,
         )
         worker._identity_text = "You are a Worker. Execute the assigned task. Do NOT decompose or spawn."
         worker._alignment_text = "Remember: you are a Worker. Execute the task. Do not plan or decompose."
@@ -709,7 +765,10 @@ class HarnessRunner:
             worker._agents_md = self._agents_md_content
 
         if selected_skills:
-            skill_content = "\n\n".join(f"## {s.name}\n{s.content}" for s in selected_skills)
+            skill_content = "\n\n".join(
+                f"## {s.name}\n{s.content}" if s.name in set(str(n).strip() for n in requested_skills) else f"## {s.name}\n{s.description}"
+                for s in selected_skills
+            )
             worker._skill_content = skill_content
             worker._injected_skills.update(selected_names)
             for skill in selected_skills:
@@ -731,21 +790,41 @@ class HarnessRunner:
                 await worker.setup_workspace()
                 await worker.run(f"Execute task: {task_desc}")
             except Exception as exc:
-                self._handoffs[task_id] = {
+                self._db.insert_handoff(task_id, {
                     "worker_id": worker_id,
                     "task_id": task_id,
                     "status": "failed",
                     "narrative": f"Worker crashed: {exc}",
                     "diffs": [],
-                }
+                })
             finally:
+                # Mark completed in watchdog FIRST — before any auto-merge
+                # to prevent zombie spam while merge runs
+                self.watchdog.mark_completed(worker_id)
                 if worker.handoff:
-                    self._handoffs[task_id] = worker.handoff
+                    self._db.insert_handoff(task_id, worker.handoff)
+                    # Auto-merge: apply handoff to canonical repo immediately
+                    try:
+                        await self._handle_accept_handoff(task_id)
+                    except Exception as merge_exc:
+                        logger.warning("Auto-merge failed for %s: %s", task_id, merge_exc)
+                # Safety net: if task still in_progress but worker finished, update bookkeeping
+                stored = self._tasks.get(task_id)
+                if stored and stored.status == TaskStatus.IN_PROGRESS:
+                    handoff_data = self._db.get_handoff(task_id) or {}
+                    diffs = handoff_data.get("diffs", [])
+                    if diffs:
+                        stored.status = TaskStatus.COMPLETED
+                        self.error_budget.record(success=True)
 
         async_task = asyncio.create_task(_run_worker(), name=worker_id)
         self._async_tasks[task_id] = async_task
+        self._total_spawns += 1
+        # Register kill callback with watchdog
+        self.watchdog.register_kill_callback(worker_id, lambda tid=task_id: self._kill_worker(tid))
 
         await self.event_bus.emit(WorkerSpawned(agent_id=worker_id, task_id=task_id))
+
 
         return {"status": "spawned", "worker_id": worker_id, "task_id": task_id}
 
@@ -753,12 +832,15 @@ class HarnessRunner:
         if scope in self._sub_planners:
             return {"error": f"Sub-planner already spawned for scope: {scope}"}
 
+        # Increment depth counter for sub-planner hierarchy
+        self._sub_planner_depth += 1
+
         planner_id = f"sub-planner-{scope}-{uuid.uuid4().hex[:6]}"
         client = self._make_client(model=self._get_model_for_role("sub_planner"))
         planner_config = AgentConfig(
             agent_id=planner_id,
             role=AgentRole.SUB_PLANNER,
-            depth=1,
+            depth=self._sub_planner_depth,
             parent_id="root-planner",
             token_budget=200_000,
             timeout_seconds=600,
@@ -779,6 +861,9 @@ class HarnessRunner:
                 await sub_planner.run(task)
             except Exception:
                 pass
+            finally:
+                # Decrement depth counter when sub-planner completes
+                self._sub_planner_depth -= 1
 
         self._sub_planners[scope] = sub_planner
         self._sub_async_tasks[scope] = asyncio.create_task(_run_sub_planner(), name=planner_id)
@@ -794,7 +879,7 @@ class HarnessRunner:
 
         alerts = await self.watchdog.check_agents()
 
-        handoff = self._handoffs.get(handoff_id)
+        handoff = self._db.get_handoff(handoff_id)
         if handoff:
             result: dict[str, Any] = {"status": "ready", "handoff": handoff}
             if alerts:
@@ -819,7 +904,9 @@ class HarnessRunner:
         if not repo or not diffs:
             return []
 
-        base_snapshot = self._base_snapshots.get(task_id, {})
+        # Use SnapshotStore for base content lookups
+        base_snapshot_id = f"base-{task_id}"
+        has_base = self._snapshot_store.has_snapshot(base_snapshot_id)
         applied: list[str] = []
         conflicts: list[str] = []
 
@@ -830,7 +917,7 @@ class HarnessRunner:
                 continue
 
             full_path = os.path.join(repo, rel_path)
-            base_content = base_snapshot.get(rel_path)
+            base_content = self._snapshot_store.get_content(base_snapshot_id, rel_path) if has_base else None
 
             current_content = None
             if os.path.exists(full_path):
@@ -855,21 +942,76 @@ class HarnessRunner:
 
         return applied
 
-    def _handle_accept_handoff(self, handoff_id: str) -> dict:
+    async def _handle_accept_handoff(self, handoff_id: str) -> dict:
         task = self._tasks.get(handoff_id)
+        if not task:
+            # Scan handoffs for matching task_id
+            handoff_data = self._db.get_handoff(handoff_id) or {}
+            linked_task_id = handoff_data.get("task_id", "")
+            if linked_task_id:
+                task = self._tasks.get(linked_task_id)
         if task:
             task.status = TaskStatus.COMPLETED
             self.error_budget.record(success=True)
-        handoff = self._handoffs.get(handoff_id, {})
-        applied = self._apply_diffs_to_canonical(handoff, task_id=handoff_id)
-        self._base_snapshots.pop(handoff_id, None)
+
         worker = self._workers.get(handoff_id)
+        repo = self.config.repos[0] if self.config.repos else None
+
+        # Try optimistic_merge first, fallback to _apply_diffs_to_canonical
+        applied: list[str] = []
+        if worker and repo and worker.workspace_path:
+            try:
+                workspace = Workspace(
+                    worker_id=worker.config.agent_id,
+                    repo_path=repo,
+                    workspace_path=worker.workspace_path,
+                    base_commit="",
+                )
+                merge_result = await optimistic_merge(
+                    workspace=workspace,
+                    canonical_path=repo,
+                    idempotency_guard=None,
+                    base_snapshot=getattr(worker, '_base_snapshot', None),
+                )
+
+                if merge_result.status == MergeStatus.CONFLICT:
+                    applied.append(f"CONFLICTS detected: {', '.join(merge_result.conflicts)}")
+                    # Spawn fixer worker for conflicts
+                    fixer_fn = self._build_fixer_fn()
+                    if fixer_fn and merge_result.conflicts:
+                        try:
+                            await fixer_fn(merge_result.conflicts)
+                            applied.append(f"Fixer spawned for: {', '.join(merge_result.conflicts)}")
+                        except Exception as e:
+                            applied.append(f"Fixer failed: {e}")
+                elif merge_result.status == MergeStatus.CLEAN:
+                    applied = merge_result.files_merged or []
+                elif merge_result.status == MergeStatus.NO_CHANGES:
+                    applied = ["no changes"]
+                else:
+                    # Fallback
+                    handoff = self._db.get_handoff(handoff_id) or {}
+                    applied = self._apply_diffs_to_canonical(handoff, task_id=handoff_id)
+            except Exception:
+                # Fallback to original method on any error
+                handoff = self._db.get_handoff(handoff_id) or {}
+                applied = self._apply_diffs_to_canonical(handoff, task_id=handoff_id)
+        else:
+            # Fallback: use original method
+            handoff = self._db.get_handoff(handoff_id) or {}
+            applied = self._apply_diffs_to_canonical(handoff, task_id=handoff_id)
+        self._snapshot_store.delete_snapshot(f"base-{handoff_id}")
         if worker and self.config.workspace.cleanup_on_success:
             worker.cleanup()
         return {"status": "accepted", "handoff_id": handoff_id, "files_applied": applied}
 
     def _handle_reject_handoff(self, handoff_id: str, reason: str = "") -> dict:
         task = self._tasks.get(handoff_id)
+        if not task:
+            handoff_data = self._db.get_handoff(handoff_id) or {}
+            linked_task_id = handoff_data.get("task_id", "")
+            if linked_task_id:
+                task = self._tasks.get(linked_task_id)
         if task:
             task.status = TaskStatus.PENDING
             task.assigned_to = None
@@ -879,10 +1021,27 @@ class HarnessRunner:
             worker.cleanup()
         self._workers.pop(handoff_id, None)
         self._async_tasks.pop(handoff_id, None)
-        self._handoffs.pop(handoff_id, None)
+        self._db.delete_handoff(handoff_id)
         return {"status": "rejected", "handoff_id": handoff_id, "reason": reason}
 
+    def _kill_worker(self, task_id: str) -> None:
+        """Kill a worker task and mark it as failed. Called by watchdog."""
+        atask = self._async_tasks.get(task_id)
+        if atask and not atask.done():
+            atask.cancel()
+        task = self._tasks.get(task_id)
+        if task:
+            task.status = TaskStatus.FAILED
+        self.error_budget.record(success=False)
+
     def _handle_rewrite_scratchpad(self, content: str) -> dict:
+        # Throttle scratchpad rewrites while workers are running
+        running_workers = [
+            tid for tid, atask in list(self._async_tasks.items())
+            if not atask.done()
+        ]
+        if running_workers:
+            return {"status": "throttled", "message": "Workers are running. Review handoffs first."}
         valid, missing = self.scratchpad.validate(content)
         self.scratchpad.rewrite("planner", content)
         if not valid:
@@ -901,6 +1060,51 @@ class HarnessRunner:
             "total": self.error_budget.total_tasks,
             "threshold": self.error_budget.budget_percentage,
         }
+
+    def _handle_read_canonical_file(self, path: str) -> dict:
+        """Read a file from the canonical repo (after merges). Use to see current state."""
+        repo = self.config.repos[0] if self.config.repos else None
+        if not repo:
+            return {"status": "error", "message": "No canonical repo configured"}
+        
+        import os
+        full_path = os.path.join(repo, path)
+        if not os.path.exists(full_path):
+            return {"status": "error", "path": path, "message": "File does not exist"}
+        
+        try:
+            with open(full_path, "r") as f:
+                content = f.read()
+            return {"status": "ok", "path": path, "content": content}
+        except Exception as e:
+            return {"status": "error", "path": path, "message": str(e)}
+
+    def _handle_list_workers(self) -> dict:
+        """List all workers and their current status."""
+        workers = []
+        for task_id, worker in self._workers.items():
+            atask = self._async_tasks.get(task_id)
+            if atask:
+                if atask.done():
+                    try:
+                        exc = atask.exception()
+                        status = "failed" if exc else "completed"
+                    except (asyncio.CancelledError, Exception):
+                        status = "cancelled"
+                else:
+                    status = "running"
+            else:
+                status = "unknown"
+            
+            has_handoff = self._db.get_handoff(task_id) is not None
+            workers.append({
+                "task_id": task_id,
+                "worker_id": worker.config.agent_id,
+                "status": status,
+                "has_handoff": has_handoff,
+            })
+        return {"status": "ok", "workers": workers}
+
 
     async def _create_skill_tool(self, workspace_path: str, **kwargs: Any) -> dict[str, Any]:
         return await create_skill_handler(kwargs, workspace_path=workspace_path, event_bus=self.event_bus)
@@ -927,29 +1131,11 @@ class HarnessRunner:
             "edit_file": partial(edit_file_handler, workspace_path=workspace_path),
             "grep": partial(grep_handler, workspace_path=workspace_path),
             "find_files": partial(find_files_handler, workspace_path=workspace_path),
-            "todo_write": partial(todo_write_handler, workspace_path=workspace_path),
-            "ask": partial(ask_handler, workspace_path=workspace_path),
-            "background_task": partial(background_task_handler, workspace_path=workspace_path),
-            "check_background": partial(check_background_handler, workspace_path=workspace_path),
-            "create_skill": partial(self._create_skill_tool, workspace_path=workspace_path),
-            "load_skill": partial(self._load_skill_tool, workspace_path=workspace_path, loaded_skills=loaded_skills),
             "submit_handoff": submit_handoff_handler,
         }
-        if self.config.browser.enabled:
-            handlers["browser"] = partial(browser_handler, workspace_path=workspace_path)
-            handlers["visual_verify"] = partial(visual_verify_handler, workspace_path=workspace_path)
-        if self.config.git_tools.enabled:
-            handlers["git_status"] = partial(git_status_handler, workspace_path=workspace_path)
-            handlers["git_diff"] = partial(git_diff_handler, workspace_path=workspace_path)
-            handlers["git_commit"] = partial(git_commit_handler, workspace_path=workspace_path)
-            handlers["git_branch"] = partial(git_branch_handler, workspace_path=workspace_path)
-        if self.config.web_tools.enabled:
-            handlers["http_fetch"] = partial(http_fetch_handler, workspace_path=workspace_path)
-            handlers["url_extract"] = partial(url_extract_handler, workspace_path=workspace_path)
         return handlers
 
     def _make_fixer_tool_handlers(self, repo: str) -> dict:
-        loaded_skills: set[str] = set()
         handlers = {
             "bash": partial(bash_handler, workspace_path=repo),
             "read_file": partial(read_file_handler, workspace_path=repo),
@@ -957,28 +1143,24 @@ class HarnessRunner:
             "edit_file": partial(edit_file_handler, workspace_path=repo),
             "grep": partial(grep_handler, workspace_path=repo),
             "find_files": partial(find_files_handler, workspace_path=repo),
-            "todo_write": partial(todo_write_handler, workspace_path=repo),
-            "ask": partial(ask_handler, workspace_path=repo),
-            "background_task": partial(background_task_handler, workspace_path=repo),
-            "check_background": partial(check_background_handler, workspace_path=repo),
-            "create_skill": partial(self._create_skill_tool, workspace_path=repo),
-            "load_skill": partial(self._load_skill_tool, workspace_path=repo, loaded_skills=loaded_skills),
             "submit_handoff": submit_handoff_handler,
         }
-        if self.config.browser.enabled:
-            handlers["browser"] = partial(browser_handler, workspace_path=repo)
-            handlers["visual_verify"] = partial(visual_verify_handler, workspace_path=repo)
-        if self.config.git_tools.enabled:
-            handlers["git_status"] = partial(git_status_handler, workspace_path=repo)
-            handlers["git_diff"] = partial(git_diff_handler, workspace_path=repo)
-            handlers["git_commit"] = partial(git_commit_handler, workspace_path=repo)
-            handlers["git_branch"] = partial(git_branch_handler, workspace_path=repo)
-        if self.config.web_tools.enabled:
-            handlers["http_fetch"] = partial(http_fetch_handler, workspace_path=repo)
-            handlers["url_extract"] = partial(url_extract_handler, workspace_path=repo)
         return handlers
 
     def _build_planner_handlers(self) -> dict[str, Any]:
+        return {
+            "create_task": self._handle_create_task,
+            "spawn_worker": self._handle_spawn_worker,
+            "spawn_sub_planner": self._handle_spawn_sub_planner,
+            "review_handoff": self._handle_review_handoff,
+            "accept_handoff": self._handle_accept_handoff,
+            "reject_handoff": self._handle_reject_handoff,
+            "rewrite_scratchpad": self._handle_rewrite_scratchpad,
+            "read_scratchpad": self._handle_read_scratchpad,
+            "get_error_budget": self._handle_get_error_budget,
+            "read_canonical_file": self._handle_read_canonical_file,
+            "list_workers": self._handle_list_workers,
+        }
         return {
             "create_task": self._handle_create_task,
             "spawn_worker": self._handle_spawn_worker,
@@ -1084,9 +1266,11 @@ class HarnessRunner:
             event_bus=self.event_bus,
             system_prompt=self._prompt_texts["planner"],
             completion_gate=self.completion_gate,
-            max_planner_turns=50,
-            max_wall_time_seconds=600,
+            max_planner_turns=self.config.agents.max_planner_turns,
+            max_wall_time_seconds=self.config.agents.max_planner_wall_time,
+            idempotency_guard=self._idempotency_guard,
         )
+
         planner._identity_text = "You are a Planner. Decompose and delegate. NEVER write code."
         planner._alignment_text = "Remember: you are a Planner. Decompose and delegate. Never write code."
         planner._reflection_interval = self.config.freshness.self_reflection_interval
@@ -1098,7 +1282,68 @@ class HarnessRunner:
         self.renderer.console.print(f"[dim]Instructions: {instructions}[/]")
         self.renderer.console.print()
 
+        # Start watchdog background task
+        async def _watchdog_loop():
+            while not self._shutting_down:
+                await self.watchdog.check_agents()
+                await asyncio.sleep(30)
+        self._watchdog_task = asyncio.create_task(_watchdog_loop(), name="watchdog")
+
+        # Set up planner continuation callback: when MiniMax returns text
+        # but tasks remain incomplete, inject a nudge to keep spawning workers
+        def _check_continuation() -> str | None:
+            incomplete = []
+            completed_tasks = []
+            for tid, task_obj in self._tasks.items():
+                if task_obj.status in (TaskStatus.IN_PROGRESS, TaskStatus.PENDING):
+                    incomplete.append(tid)
+                elif task_obj.status == TaskStatus.COMPLETED:
+                    completed_tasks.append(tid)
+
+            if not incomplete:
+                return None  # All tasks done, no continuation needed
+
+            # Build status summary
+            status_lines = []
+            for tid, task_obj in self._tasks.items():
+                atask = self._async_tasks.get(tid)
+                has_handoff = self._db.get_handoff(tid) is not None
+                if atask and atask.done():
+                    w_status = "completed" if not atask.exception() else "failed"
+                elif atask:
+                    w_status = "running"
+                else:
+                    w_status = str(task_obj.status.value)
+                status_lines.append(f"  - {tid}: {w_status} (handoff: {has_handoff})")
+
+            logger.info(
+                "Planner continuation: %d completed, %d incomplete: %s",
+                len(completed_tasks),
+                len(incomplete),
+                ", ".join(incomplete[:5]),
+            )
+
+            return (
+                "[CONTINUATION] You returned text but there is more work to do.\n"
+                f"Tasks completed: {len(completed_tasks)}. Tasks remaining: {len(incomplete)}.\n"
+                f"Remaining task IDs: {', '.join(incomplete[:10])}\n\n"
+                "Worker status:\n" + "\n".join(status_lines) + "\n\n"
+                "The original instructions have MORE modules to build. "
+                "You MUST spawn_worker for the next batch of tasks NOW. "
+                "Do NOT return text — call spawn_worker immediately."
+            )
+
+        planner._continuation_callback = _check_continuation
         result = await planner.run(instructions)
+
+        # Cancel watchdog task
+        self._shutting_down = True
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
 
         reconciliation_report = None
         if self.config.test_command and self.config.repos:
@@ -1115,14 +1360,14 @@ class HarnessRunner:
                 f"[dim]Rounds: {reconciliation_report.rounds}, Fixes: {reconciliation_report.fixes_attempted}[/]"
             )
 
-        for atask in self._async_tasks.values():
+        for atask in list(self._async_tasks.values()):
             if not atask.done():
                 try:
                     await asyncio.wait_for(atask, timeout=60)
                 except (asyncio.TimeoutError, Exception):
                     pass
 
-        for atask in self._sub_async_tasks.values():
+        for atask in list(self._sub_async_tasks.values()):
             if not atask.done():
                 try:
                     await asyncio.wait_for(atask, timeout=60)
@@ -1130,7 +1375,7 @@ class HarnessRunner:
                     pass
 
         if self.config.workspace.cleanup_on_success:
-            for worker in self._workers.values():
+            for worker in list(self._workers.values()):
                 worker.cleanup()
         self._prune_workspaces()
 
@@ -1140,15 +1385,20 @@ class HarnessRunner:
         self.renderer.console.print("[bold]Harness complete[/]")
         self.renderer.render_task_board(
             {
-                "pending": sum(1 for t in self._tasks.values() if t.status == TaskStatus.PENDING),
-                "in_progress": sum(1 for t in self._tasks.values() if t.status == TaskStatus.IN_PROGRESS),
-                "completed": sum(1 for t in self._tasks.values() if t.status == TaskStatus.COMPLETED),
-                "failed": sum(1 for t in self._tasks.values() if t.status == TaskStatus.FAILED),
-                "blocked": sum(1 for t in self._tasks.values() if t.status == TaskStatus.BLOCKED),
+                "pending": sum(1 for t in list(self._tasks.values()) if t.status == TaskStatus.PENDING),
+                "in_progress": sum(1 for t in list(self._tasks.values()) if t.status == TaskStatus.IN_PROGRESS),
+                "completed": sum(1 for t in list(self._tasks.values()) if t.status == TaskStatus.COMPLETED),
+                "failed": sum(1 for t in list(self._tasks.values()) if t.status == TaskStatus.FAILED),
+                "blocked": sum(1 for t in list(self._tasks.values()) if t.status == TaskStatus.BLOCKED),
             }
         )
 
         return result
+
+        # Cleanup SQLite stores
+        self._snapshot_store.cleanup_orphan_blobs()
+        self._snapshot_store.close()
+        self._db.close()
 
 
 async def run_harness(

@@ -36,13 +36,15 @@ class AgentLimitsConfig(BaseSettings):
     max_workers: int = Field(default=10)
     max_depth: int = Field(default=3)
     worker_timeout_seconds: int = Field(default=300)
-    worker_token_budget: int = Field(default=100_000)
+    worker_token_budget: int = Field(default=1_000_000)
     scratchpad_rewrite_interval: int = Field(default=10)
     context_compression_threshold: float = Field(default=0.8)
     compression_threshold: int = Field(
         default=100_000,
         description="Token count triggering compression",
     )
+    max_planner_turns: int = Field(default=80, description="Max LLM turns for planner before forced stop")
+    max_planner_wall_time: int = Field(default=900, description="Max wall time in seconds for planner loop")
 
 
 class ErrorPolicyConfig(BaseSettings):

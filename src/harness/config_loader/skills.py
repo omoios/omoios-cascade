@@ -67,8 +67,24 @@ def _source_priority(source_path: str, workspace_root: Path) -> int:
         return 0
 
 
+_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "shall",
+    "should", "may", "might", "must", "can", "could", "to", "of", "in",
+    "for", "on", "with", "at", "by", "from", "as", "into", "through",
+    "during", "before", "after", "above", "below", "between", "out",
+    "off", "up", "down", "and", "but", "or", "nor", "not", "so", "yet",
+    "both", "either", "neither", "each", "every", "all", "any", "few",
+    "more", "most", "other", "some", "such", "no", "only", "own", "same",
+    "than", "too", "very", "just", "because", "if", "when", "where",
+    "how", "what", "which", "who", "whom", "this", "that", "these",
+    "those", "it", "its", "he", "she", "they", "them", "we", "you",
+    "i", "me", "my", "your", "his", "her", "our", "their",
+})
+
+
 def _word_set(text: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9_\-]+", text.lower()))
+    return set(re.findall(r"[a-z0-9_\-]+", text.lower())) - _STOPWORDS
 
 
 class SkillRegistry:
@@ -152,7 +168,7 @@ class SkillRegistry:
                         if fnmatch(clean, pattern):
                             file_score = max(file_score, 1)
 
-            if trigger_exact or overlap > 0 or file_score > 0:
+            if trigger_exact or overlap >= 2 or file_score > 0:
                 score = (300 if trigger_exact else 0) + (100 * file_score) + overlap
                 scored.append((score, _source_priority(skill.source_path, self._workspace_root), skill))
 

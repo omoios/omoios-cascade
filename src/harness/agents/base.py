@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import time
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from harness.agents.ttsr import TTSRMixin
 from harness.events import EventBus, IdentityReinjected, PivotEncouraged, SelfReflectionInjected
 from harness.models.agent import AgentConfig
 
+if TYPE_CHECKING:
+    from harness.storage import HarnessDB
 
 class BaseAgent(TTSRMixin):
     COMPRESSION_THRESHOLD = 100000
@@ -19,6 +23,7 @@ class BaseAgent(TTSRMixin):
         tool_schemas: list[dict],
         event_bus: EventBus | None = None,
         system_prompt: str = "",
+        db: HarnessDB | None = None,
     ):
         self.client = client
         self.config = config
@@ -40,6 +45,7 @@ class BaseAgent(TTSRMixin):
         self._agents_md: str = ""
         self._skill_content: str = ""
         self._injected_skills: set[str] = set()
+        self._db: HarnessDB | None = db
         self._init_ttsr_state()
 
     async def run(self, initial_message: str = "") -> str:
@@ -55,7 +61,12 @@ class BaseAgent(TTSRMixin):
                 getattr(response.usage, "output_tokens", 0)
             )
             self.turn_count += 1
-            self.messages.append({"role": "assistant", "content": response.content})
+            # Filter out ThinkingBlocks before appending to conversation history
+            filtered_content = [
+                block for block in response.content
+                if getattr(block, 'type', None) != 'thinking'
+            ]
+            self.messages.append({"role": "assistant", "content": filtered_content or response.content})
 
             text_blocks = [
                 block.text
@@ -66,6 +77,11 @@ class BaseAgent(TTSRMixin):
                 last_text = "\n".join(text_blocks)
 
             if response.stop_reason != "tool_use":
+                # Check if subclass wants to nudge the model into using tools
+                nudge = self._get_tool_nudge()
+                if nudge:
+                    self.messages.append({"role": "user", "content": nudge})
+                    continue
                 await self.on_loop_exit()
                 return last_text
 
@@ -154,6 +170,8 @@ class BaseAgent(TTSRMixin):
                     await self.event_bus.emit(IdentityReinjected(agent_id=self.config.agent_id))
             if self._alignment_text:
                 self.messages.append({"role": "user", "content": f"[ALIGNMENT] {self._alignment_text}"})
+            # Persist compressed messages to SQLite
+            self._persist_messages()
 
         if self.turn_count > 0 and self.turn_count % self._reflection_interval == 0:
             self.messages.append(
@@ -215,4 +233,16 @@ class BaseAgent(TTSRMixin):
                 self._consecutive_failures[tool_name] = 0
 
     async def on_loop_exit(self) -> None:
-        pass
+        # Persist final messages to SQLite on exit
+        self._persist_messages()
+
+
+    def _get_tool_nudge(self) -> str | None:
+        """Override in subclass to nudge model into using tools. Return None to skip."""
+        return None
+
+    def _persist_messages(self) -> None:
+        """Write current messages to HarnessDB if available."""
+        if self._db is None:
+            return
+        self._db.replace_messages(self.config.agent_id, self.messages)

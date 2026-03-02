@@ -120,3 +120,38 @@ def snapshot_workspace(workspace_path: str) -> dict[str, str]:
                     pass
 
     return result
+
+
+def _walk_files(workspace_path: str) -> list[tuple[str, str]]:
+    """Walk workspace and return [(rel_path, full_path)] for all text files."""
+    result: list[tuple[str, str]] = []
+    for root, _, files in os.walk(workspace_path):
+        for filename in files:
+            full_path = os.path.join(root, filename)
+            rel_path = os.path.relpath(full_path, workspace_path)
+            skip = False
+            for pattern in IGNORE_PATTERNS:
+                if pattern in rel_path.split(os.sep):
+                    skip = True
+                    break
+            if not skip:
+                result.append((rel_path, full_path))
+    return result
+
+
+def _hash_file(full_path: str) -> str | None:
+    """Return MD5 hex digest of a file's content, or None if unreadable."""
+    try:
+        with open(full_path, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+    except (OSError, IOError):
+        return None
+
+
+def _read_file_text(full_path: str) -> str | None:
+    """Read file as UTF-8 text, or None if unreadable."""
+    try:
+        with open(full_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except (UnicodeDecodeError, OSError):
+        return None

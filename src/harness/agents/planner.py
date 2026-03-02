@@ -51,6 +51,9 @@ class RootPlanner(BaseAgent):
         self._spawned_workers: list[str] = []
         self._reviewed_handoffs: list[str] = []
         self._requested_worker_skills: dict[str, list[str]] = {}
+        self._continuation_callback: Callable[[], str | None] | None = None
+        self._continuation_count: int = 0
+        self._max_continuations: int = 5
 
     async def run(self, initial_message: str = "") -> str:
         self._start_time = time.time()
@@ -79,6 +82,17 @@ class RootPlanner(BaseAgent):
                 last_text = "\n".join(text_blocks)
 
             if response.stop_reason != "tool_use":
+                # Check if continuation callback says there's more work
+                if (
+                    self._continuation_callback
+                    and self._continuation_count < self._max_continuations
+                    and not self.is_over_limits()
+                ):
+                    continuation_msg = self._continuation_callback()
+                    if continuation_msg:
+                        self._continuation_count += 1
+                        self.messages.append({"role": "user", "content": continuation_msg})
+                        continue  # Re-enter the while loop
                 await self.on_loop_exit()
                 return last_text
 
@@ -264,3 +278,44 @@ class SubPlanner(BaseAgent):
                     }
                 )
         await super().on_tool_result(results)
+
+    @staticmethod
+    def compress_handoffs(handoffs: list[dict]) -> str:
+        """Compress multiple handoffs into a narrative summary."""
+        if not handoffs:
+            return "No handoffs to compress."
+
+        # Count statuses
+        completed = sum(1 for h in handoffs if h.get("status") == "completed")
+        failed = sum(1 for h in handoffs if h.get("status") == "failed")
+        pending = len(handoffs) - completed - failed
+
+        # Collect changed files
+        all_files: set[str] = set()
+        all_conflicts: list[str] = []
+        for handoff in handoffs:
+            for diff in handoff.get("diffs", []):
+                path = diff.get("path", "")
+                if path:
+                    all_files.add(path)
+            if "conflicts" in handoff:
+                all_conflicts.extend(handoff["conflicts"])
+
+        # Build narrative
+        parts = [f"Completed {completed} tasks"]
+        if failed:
+            parts.append(f"failed: {failed}")
+        if pending:
+            parts.append(f"pending: {pending}")
+
+        summary = ", ".join(parts) + "."
+
+        if all_files:
+            summary += f" Key changes: {', '.join(sorted(all_files)[:5])}"
+            if len(all_files) > 5:
+                summary += f" and {len(all_files) - 5} more"
+
+        if all_conflicts:
+            summary += f" Issues: {', '.join(set(all_conflicts))}"
+
+        return summary
