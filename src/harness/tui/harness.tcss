@@ -1,0 +1,249 @@
+/* Textual CSS stylesheet for the Harness TUI */
+
+/* Base styles */
+Screen {
+    background: $surface-darken-1;
+    color: $text;
+}
+
+/* Header styling */
+Header {
+    background: $primary;
+    color: $text;
+    text-style: bold;
+}
+
+Header > .header__title {
+    text-style: bold;
+}
+
+/* Footer styling */
+Footer {
+    background: $surface;
+    color: $text;
+}
+
+Footer > .footer__highlight {
+    background: $primary;
+}
+
+/* Main layout grid */
+#main-grid {
+    layout: grid;
+    grid-size: 2;
+    grid-columns: 35 1fr;
+    grid-rows: 1fr;
+    height: 100%;
+}
+
+/* Sidebar styling */
+#sidebar {
+    layout: vertical;
+    width: 100%;
+    height: 100%;
+    background: $surface-darken-2;
+    border-right: solid $primary;
+    padding: 1 0;
+}
+
+/* Main content area */
+#main-content {
+    layout: vertical;
+    width: 100%;
+    height: 100%;
+}
+
+/* Task board widget */
+TaskBoardWidget {
+    height: auto;
+    min-height: 10;
+    background: $surface;
+    border: solid $primary;
+    margin: 0 1 1 1;
+    padding: 1;
+}
+
+TaskBoardWidget #task-board-content {
+    color: $text;
+    text-style: none;
+}
+
+/* Cost widget */
+CostWidget {
+    height: auto;
+    min-height: 10;
+    background: $surface;
+    border: solid $primary;
+    margin: 0 1 1 1;
+    padding: 1;
+}
+
+CostWidget #cost-content {
+    color: $text;
+}
+
+/* Watchdog panel */
+WatchdogPanel {
+    height: 1fr;
+    background: $surface;
+    border: solid $primary;
+    margin: 0 1 0 1;
+    padding: 1;
+}
+
+WatchdogPanel #watchdog-content {
+    color: $text;
+}
+
+WatchdogPanel.has-alerts {
+    background: $error-darken-2;
+    border: solid $error;
+}
+
+WatchdogPanel.has-alerts #watchdog-content {
+    color: $text;
+    text-style: bold;
+}
+
+/* Worker table container */
+#worker-container {
+    height: 60%;
+    min-height: 10;
+    background: $surface;
+    border: solid $primary;
+    margin: 0 1 1 1;
+    padding: 0;
+}
+
+/* Worker table styling */
+WorkerTableWidget {
+    width: 100%;
+    height: 100%;
+    background: $surface;
+}
+
+WorkerTableWidget > .datatable--header {
+    background: $primary;
+    color: $text;
+    text-style: bold;
+}
+
+WorkerTableWidget > .datatable--row {
+    background: $surface;
+}
+
+WorkerTableWidget > .datatable--row-odd {
+    background: $surface-darken-1;
+}
+
+WorkerTableWidget > .datatable--row-cursor {
+    background: $primary-darken-2;
+    color: $text;
+}
+
+WorkerTableWidget > .datatable--row-hover {
+    background: $primary-darken-1;
+}
+
+/* Event log container */
+#event-log-container {
+    height: 40%;
+    min-height: 8;
+    background: $surface;
+    border: solid $primary;
+    margin: 0 1 0 1;
+    padding: 0;
+}
+
+/* Event log styling */
+EventLogWidget {
+    width: 100%;
+    height: 100%;
+    background: $surface-darken-1;
+    color: $text;
+    padding: 0 1;
+}
+
+EventLogWidget:focus {
+    border: solid $primary;
+}
+
+/* Status colors for reactive updates */
+.status-pending {
+    color: $text;
+}
+
+.status-in_progress {
+    color: $warning;
+}
+
+.status-completed {
+    color: $success;
+}
+
+.status-failed {
+    color: $error;
+}
+
+.status-blocked {
+    color: $text-muted;
+}
+
+/* Scrollbar styling */
+Scrollbar {
+    background: $surface-darken-2;
+}
+
+Scrollbar > .scrollbar--thumb {
+    background: $primary-darken-1;
+}
+
+Scrollbar > .scrollbar--thumb:hover {
+    background: $primary;
+}
+
+/* Static widget defaults */
+Static {
+    color: $text;
+}
+
+/* Focus states */
+*:focus {
+    outline: none;
+}
+
+/* Button styling (if needed) */
+Button {
+    background: $primary;
+    color: $text;
+    border: none;
+    padding: 1 2;
+}
+
+Button:hover {
+    background: $primary-lighten-1;
+}
+
+Button:disabled {
+    background: $surface-darken-2;
+    color: $text-muted;
+}
+
+/* Container styling */
+.container {
+    background: $surface;
+    border: solid $primary-darken-2;
+    padding: 1;
+}
+
+/* Label styling */
+Label {
+    color: $text;
+    text-style: bold;
+}
+
+/* Title styling */
+.title {
+    text-style: bold underline;
+    color: $primary;
+}

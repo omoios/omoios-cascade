@@ -1,7 +1,7 @@
 [project]
-name = "harness"
+name = "omoios-cascade"
 version = "0.1.0"
-description = "Learn how modern AI agents work by building one from scratch"
+description = "Production multi-agent orchestration harness for self-driving codebases"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

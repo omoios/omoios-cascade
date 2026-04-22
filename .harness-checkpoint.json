@@ -1,0 +1,19 @@
+{
+  "task_states": {
+    "create-hello-py": "in_progress"
+  },
+  "worker_states": {
+    "create-hello-py": "running"
+  },
+  "error_budget_snapshot": {
+    "failures": 0,
+    "total": 0,
+    "zone": "healthy"
+  },
+  "scratchpad_content": {
+    "planner": ""
+  },
+  "metadata": {
+    "config_model": "MiniMax-M2.5-highspeed"
+  }
+}
